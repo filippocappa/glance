@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- Bundle Identity -->
+	<key>CFBundleName</key>
+	<string>Glance</string>
+	<key>CFBundleIdentifier</key>
+	<string>com.glance.app</string>
+	<key>CFBundleExecutable</key>
+	<string>$(EXECUTABLE_NAME)</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+
+	<!-- Versioning -->
+	<key>CFBundleVersion</key>
+	<string>1.0</string>
+	<key>CFBundleShortVersionString</key>
+	<string>1.0</string>
+	<key>CFBundleInfoDictionaryVersion</key>
+	<string>6.0</string>
+	<key>CFBundleDevelopmentRegion</key>
+	<string>en</string>
+
+	<!-- Minimum macOS version: Sonoma (14.0) required for modern ScreenCaptureKit APIs -->
+	<key>LSMinimumSystemVersion</key>
+	<string>14.0</string>
+
+	<!-- Menu Bar Agent App: hides the Dock icon so Glance lives entirely in the menu bar -->
+	<key>LSUIElement</key>
+	<true/>
+
+	<!-- Privacy Usage Descriptions -->
+	<!-- ScreenCaptureKit requires screen recording permission via TCC.
+	     This string is shown to the user in the system permission dialog. -->
+	<key>NSScreenCaptureUsageDescription</key>
+	<string>Glance needs screen recording access to capture and display windows in a Picture-in-Picture overlay.</string>
+</dict>
+</plist>

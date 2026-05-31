@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- App Sandbox is DISABLED because ScreenCaptureKit requires direct access
+	     to the window server and screen content. Sandboxed apps cannot use
+	     SCStream or SCShareableContent effectively.
+	     Screen recording permission is managed by TCC (Transparency, Consent, and Control)
+	     at the system level — there is no entitlement key for it; the user grants access
+	     via System Settings > Privacy & Security > Screen Recording. -->
+	<key>com.apple.security.app-sandbox</key>
+	<false/>
+</dict>
+</plist>
