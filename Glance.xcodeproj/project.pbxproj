@@ -129,6 +129,7 @@
 			buildPhases = (
 				32DD4C8A891B8A91C685238C /* Sources */,
 				A3C361D35F468850BEF053AB /* Resources */,
+				639DF09FF3E79EC129541D0A /* Consistently Code Sign App Bundle */,
 			);
 			buildRules = (
 			);
@@ -151,7 +152,7 @@
 				LastUpgradeCheck = 1600;
 				TargetAttributes = {
 					5796247D68EDA6C8F0512954 = {
-						ProvisioningStyle = Automatic;
+						ProvisioningStyle = Manual;
 					};
 				};
 			};
@@ -185,6 +186,27 @@
 		};
 /* End PBXResourcesBuildPhase section */
 
+/* Begin PBXShellScriptBuildPhase section */
+		639DF09FF3E79EC129541D0A /* Consistently Code Sign App Bundle */ = {
+			isa = PBXShellScriptBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputFileListPaths = (
+			);
+			inputPaths = (
+			);
+			name = "Consistently Code Sign App Bundle";
+			outputFileListPaths = (
+			);
+			outputPaths = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "echo \"Ad-hoc signing app bundle at ${CODESIGNING_FOLDER_PATH}\"\ncodesign --force --deep --sign - --entitlements \"${SRCROOT}/Glance/Glance.entitlements\" \"${CODESIGNING_FOLDER_PATH}\"\n";
+		};
+/* End PBXShellScriptBuildPhase section */
+
 /* Begin PBXSourcesBuildPhase section */
 		32DD4C8A891B8A91C685238C /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
@@ -214,7 +236,8 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_ENTITLEMENTS = Glance/Glance.entitlements;
-				CODE_SIGN_STYLE = Automatic;
+				CODE_SIGN_IDENTITY = "-";
+				CODE_SIGN_STYLE = Manual;
 				COMBINE_HIDPI_IMAGES = YES;
 				CURRENT_PROJECT_VERSION = 1;
 				ENABLE_HARDENED_RUNTIME = YES;
@@ -225,7 +248,7 @@
 					"@executable_path/../Frameworks",
 				);
 				MARKETING_VERSION = 1.0;
-				PRODUCT_BUNDLE_IDENTIFIER = com.glance.app;
+				PRODUCT_BUNDLE_IDENTIFIER = com.filippocappa.glance;
 				PRODUCT_NAME = Glance;
 				SDKROOT = macosx;
 				SWIFT_EMIT_LOC_STRINGS = YES;
@@ -294,7 +317,8 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_ENTITLEMENTS = Glance/Glance.entitlements;
-				CODE_SIGN_STYLE = Automatic;
+				CODE_SIGN_IDENTITY = "-";
+				CODE_SIGN_STYLE = Manual;
 				COMBINE_HIDPI_IMAGES = YES;
 				CURRENT_PROJECT_VERSION = 1;
 				ENABLE_HARDENED_RUNTIME = YES;
@@ -305,7 +329,7 @@
 					"@executable_path/../Frameworks",
 				);
 				MARKETING_VERSION = 1.0;
-				PRODUCT_BUNDLE_IDENTIFIER = com.glance.app;
+				PRODUCT_BUNDLE_IDENTIFIER = com.filippocappa.glance;
 				PRODUCT_NAME = Glance;
 				SDKROOT = macosx;
 				SWIFT_EMIT_LOC_STRINGS = YES;

@@ -1,6 +1,6 @@
 name: Glance
 options:
-  bundleIdPrefix: com.glance
+  bundleIdPrefix: com.filippocappa
   deploymentTarget:
     macOS: "14.0"
   xcodeVersion: "16.0"
@@ -22,7 +22,7 @@ targets:
           - "*.xcassets/AppIcon.appiconset/*.png"
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: com.glance.app
+        PRODUCT_BUNDLE_IDENTIFIER: com.filippocappa.glance
         INFOPLIST_FILE: Glance/Info.plist
         CODE_SIGN_ENTITLEMENTS: Glance/Glance.entitlements
         PRODUCT_NAME: Glance
@@ -33,5 +33,11 @@ targets:
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
         ENABLE_HARDENED_RUNTIME: true
-        CODE_SIGN_STYLE: Automatic
+        CODE_SIGN_STYLE: Manual
+        CODE_SIGN_IDENTITY: "-"
         COMBINE_HIDPI_IMAGES: true
+    postBuildScripts:
+      - name: "Consistently Code Sign App Bundle"
+        script: |
+          echo "Ad-hoc signing app bundle at ${CODESIGNING_FOLDER_PATH}"
+          codesign --force --deep --sign - --entitlements "${SRCROOT}/Glance/Glance.entitlements" "${CODESIGNING_FOLDER_PATH}"
