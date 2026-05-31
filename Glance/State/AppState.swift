@@ -54,6 +54,9 @@ final class AppState {
     /// `true` while the window is being dragged by the user.
     var isDragging: Bool = false
 
+    /// The Core Graphics window ID of the captured window.
+    var targetWindowID: CGWindowID?
+
     /// The Unix PID of the application that owns the captured region.
     /// Used to implement "click PiP → bring source app to front".
     var sourceAppPID: pid_t?
@@ -85,6 +88,7 @@ final class AppState {
     func reset() {
         sourceRect = .zero
         targetDisplay = nil
+        targetWindowID = nil
         isStreaming = false
         isPaused = false
         isHovering = false

@@ -157,7 +157,6 @@ final class GlanceWindowController {
     
     // MARK: - Resizing
     
-    /// Resizes the PiP window based on the new zoom factor.
     private func resizeWindow(toZoom zoom: CGFloat) {
         guard let panel = panel else { return }
         
@@ -170,18 +169,18 @@ final class GlanceWindowController {
         let newSize = CGSize(width: baseWidth * zoom, height: baseHeight * zoom)
         let currentFrame = panel.frame
         
-        let newFrame = NSRect(
+        let targetFrame = NSRect(
             x: currentFrame.minX,
             y: currentFrame.minY,
             width: newSize.width,
             height: newSize.height
         )
         
-        panel.setFrame(newFrame, display: true, animate: true)
-        
-        // Recalculate and snap to edge
         let screen = panel.screen ?? NSScreen.main ?? NSScreen.screens[0]
-        let targetOrigin = SnapEngine.snapPosition(for: panel.frame, on: screen)
+        let targetOrigin = SnapEngine.snapPosition(for: targetFrame, on: screen)
+        
+        // Resize frame size instantly, then spring-snap the origin to the correct corner
+        panel.setFrame(NSRect(origin: currentFrame.origin, size: newSize), display: true)
         SnapEngine.animateSpring(window: panel, to: targetOrigin)
     }
     

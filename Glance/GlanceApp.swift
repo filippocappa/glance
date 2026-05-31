@@ -85,24 +85,21 @@ struct GlanceApp: App {
     /// Start the ScreenCaptureKit stream and show the PiP window.
     private func startCapture(sourceRect: CGRect) async {
         do {
-            // Find the display containing the selected rect
-            guard let display = try await ScreenPicker.display(for: sourceRect) else {
-                appState.errorMessage = "Could not find display for selected region"
+            // Find the topmost window under the selection midpoint
+            let midPoint = CGPoint(x: sourceRect.midX, y: sourceRect.midY)
+            guard let window = try await ScreenPicker.window(at: midPoint) else {
+                appState.errorMessage = "Could not find a target window under the selected region"
                 return
             }
-            
+
             appState.sourceRect = sourceRect
-            appState.targetDisplay = display
-            
-            // Try to identify the source app (for bring-to-front feature)
-            let midPoint = CGPoint(x: sourceRect.midX, y: sourceRect.midY)
-            if let app = try? await ScreenPicker.application(at: midPoint) {
-                appState.sourceAppPID = app.processIdentifier
+            if let app = window.owningApplication {
+                appState.sourceAppPID = app.processID
             }
-            
-            // Start the capture engine
+
+            // Start the capture engine with the target window
             try await captureEngine.startCapture(
-                display: display,
+                window: window,
                 sourceRect: sourceRect,
                 appState: appState
             )

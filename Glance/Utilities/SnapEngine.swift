@@ -74,33 +74,23 @@ enum SnapEngine {
     /// - Parameters:
     ///   - windowSize: The current (or desired) size of the PiP window.
     ///   - screen: The screen whose `visibleFrame` defines the snap region.
-    /// - Returns: An array of eight `CGPoint` values, one per anchor.
+    /// - Returns: An array of four `CGPoint` values, one per corner.
     static func snapAnchors(for windowSize: CGSize, on screen: NSScreen) -> [CGPoint] {
         let visibleFrame = screen.visibleFrame
         let w = windowSize.width
         let h = windowSize.height
 
-        // Pre-compute the four inset edges so each anchor expression is
-        // easy to read and verify.
+        // Pre-compute the four inset corners (respecting Menu Bar and Dock bounds)
         let left   = visibleFrame.minX + margin
         let right  = visibleFrame.maxX - w - margin
         let top    = visibleFrame.maxY - h - margin   // AppKit: Y grows upward
         let bottom = visibleFrame.minY + margin
-        let midX   = visibleFrame.midX - w / 2
-        let midY   = visibleFrame.midY - h / 2
 
         return [
-            // ── Corners ──────────────────────────────────────────────
             CGPoint(x: left,  y: top),      // Top-left
             CGPoint(x: right, y: top),      // Top-right
             CGPoint(x: left,  y: bottom),   // Bottom-left
-            CGPoint(x: right, y: bottom),   // Bottom-right  (default)
-
-            // ── Edge midpoints ───────────────────────────────────────
-            CGPoint(x: midX,  y: top),      // Top-center
-            CGPoint(x: midX,  y: bottom),   // Bottom-center
-            CGPoint(x: left,  y: midY),     // Left-center
-            CGPoint(x: right, y: midY),     // Right-center
+            CGPoint(x: right, y: bottom)    // Bottom-right
         ]
     }
 
@@ -109,9 +99,7 @@ enum SnapEngine {
     /// Returns the snap anchor closest to the window's current position.
     ///
     /// Distance is measured as the Euclidean distance between the
-    /// window's origin and each anchor point. If two anchors are
-    /// equidistant the first one encountered wins (corners are checked
-    /// before edge midpoints, so corners take priority in ties).
+    /// window's origin and each anchor point.
     ///
     /// - Parameters:
     ///   - windowFrame: The window's current frame rectangle.
@@ -121,8 +109,7 @@ enum SnapEngine {
         let anchors = snapAnchors(for: windowFrame.size, on: screen)
         let currentOrigin = windowFrame.origin
 
-        // Start with bottom-right as the fallback default — this matches
-        // the macOS system PiP initial placement convention.
+        // Start with bottom-right as the fallback default
         var nearest = anchors[3]
         var minDistance = CGFloat.greatestFiniteMagnitude
 
@@ -139,30 +126,14 @@ enum SnapEngine {
         return nearest
     }
 
-    /// Returns `true` when the window is close enough to a snap anchor
-    /// that automatic snapping should engage.
-    ///
-    /// Use this after a drag gesture ends to decide whether to call
-    /// `animateSnap(window:to:)` or leave the window where the user
-    /// dropped it.
+    /// Snapping is always required for release in corner-only snap mode.
     ///
     /// - Parameters:
     ///   - windowFrame: The window's frame at the end of the drag.
     ///   - screen: The screen the window lives on.
-    /// - Returns: `true` if the nearest anchor is within `snapThreshold`.
+    /// - Returns: Always `true` to ensure the window snaps to one of the 4 corners.
     static func shouldSnap(for windowFrame: NSRect, on screen: NSScreen) -> Bool {
-        let anchors = snapAnchors(for: windowFrame.size, on: screen)
-        let origin = windowFrame.origin
-
-        for anchor in anchors {
-            let dx = anchor.x - origin.x
-            let dy = anchor.y - origin.y
-            let distance = sqrt(dx * dx + dy * dy)
-            if distance <= snapThreshold {
-                return true
-            }
-        }
-        return false
+        return true
     }
 
     // MARK: Animation

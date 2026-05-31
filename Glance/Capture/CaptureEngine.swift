@@ -117,19 +117,18 @@ final class CaptureEngine: NSObject {
 
     // MARK: - Public API
 
-    /// Start capturing the specified rectangle of *display*.
+    /// Start capturing the specified window.
     ///
     /// - Parameters:
-    ///   - display: The ``SCDisplay`` to capture from.
-    ///   - sourceRect: The sub-region of the display to capture, in
-    ///     **display-native (un-scaled) points**. The WindowServer will
-    ///     crop to this rectangle at the compositor level.
+    ///   - window: The ``SCWindow`` to capture from.
+    ///   - sourceRect: The sub-region of the screen containing the window, in
+    ///     global screen coordinates. Used to calculate the crop relative to the window.
     ///   - appState: The shared ``AppState`` that receives frames and
     ///     status updates.
     ///
     /// - Throws: Any error from ScreenCaptureKit stream setup.
     func startCapture(
-        display: SCDisplay,
+        window: SCWindow,
         sourceRect: CGRect,
         appState: AppState
     ) async throws {
@@ -140,41 +139,46 @@ final class CaptureEngine: NSObject {
 
         self.appState = appState
 
+        // Calculate the crop rectangle relative to the window's top-left origin.
+        // ScreenCaptureKit's window-independent capture coordinates are relative to the window.
+        let windowFrame = window.frame
+        let intersection = sourceRect.intersection(windowFrame)
+        let relativeCropRect: CGRect
+        if !intersection.isNull && intersection.width > 0 && intersection.height > 0 {
+            relativeCropRect = CGRect(
+                x: intersection.origin.x - windowFrame.origin.x,
+                y: intersection.origin.y - windowFrame.origin.y,
+                width: intersection.width,
+                height: intersection.height
+            )
+        } else {
+            // Fallback to the whole window if there is no intersection
+            relativeCropRect = CGRect(origin: .zero, size: windowFrame.size)
+        }
+
         // -----------------------------------------------------------------
         // Build SCStreamConfiguration
         // -----------------------------------------------------------------
         let config = SCStreamConfiguration()
 
-        // ★ sourceRect — the KEY efficiency lever ★
-        // Tells the WindowServer to only composite this sub-region.
-        // The compositor performs the crop on the GPU *before* transferring
-        // pixel data over the IPC surface, so we never pay for a full-
-        // screen capture.
-        config.sourceRect = sourceRect
+        // Set the relative sourceRect crop relative to the window's coordinate space.
+        config.sourceRect = relativeCropRect
 
-        // Match output dimensions to the backing-pixel size of the
-        // sourceRect. NSScreen.backingScaleFactor is typically 2 on Retina.
-        // By matching exactly we avoid any up-/down-scaling.
-        let scale = Self.scaleFactor(for: display)
-        config.width = Int(sourceRect.width * scale)
-        config.height = Int(sourceRect.height * scale)
+        // Match output dimensions to the backing-pixel size of the crop.
+        let scale = NSScreen.main?.backingScaleFactor ?? 2.0
+        config.width = Int(relativeCropRect.width * scale)
+        config.height = Int(relativeCropRect.height * scale)
 
         // 60 fps — smooth and fluid without choking the CPU/GPU.
-        // SCStream will skip frames if rendering can't keep up.
         config.minimumFrameInterval = CMTime(value: 1, timescale: 60)
 
         // Hide the system cursor inside the captured region.
-        // The user's own cursor is visible on-screen; duplicating it
-        // in the PiP window would be distracting.
         config.showsCursor = false
 
         // BGRA is the native format of IOSurface on macOS.
-        // Using it avoids any pixel-format conversion in the pipeline.
         config.pixelFormat = kCVPixelFormatType_32BGRA
 
-        // Allow up to 3 frames in the pipeline (capture → process → render).
-        // This provides a small buffer to absorb scheduling jitter without
-        // introducing visible latency.
+        // Allow up to 3 frames in the pipeline.
         config.queueDepth = 3
 
         self.streamConfiguration = config
@@ -182,9 +186,8 @@ final class CaptureEngine: NSObject {
         // -----------------------------------------------------------------
         // Build SCContentFilter
         // -----------------------------------------------------------------
-        // We capture the entire display (no window exclusions).
-        // The sourceRect in the configuration limits what is actually sent.
-        let filter = SCContentFilter(display: display, excludingWindows: [])
+        // Strictly capture ONLY this specific window.
+        let filter = SCContentFilter(desktopIndependentWindow: window)
 
         // -----------------------------------------------------------------
         // Create and start the stream
@@ -195,16 +198,14 @@ final class CaptureEngine: NSObject {
             delegate: self          // SCStreamDelegate for error handling
         )
 
-        // Register ourselves as the output handler on a dedicated serial
-        // queue. ScreenCaptureKit calls us back here with each new frame.
+        // Register ourselves as the output handler on a dedicated serial queue.
         try newStream.addStreamOutput(
             self,
             type: .screen,
             sampleHandlerQueue: captureQueue
         )
 
-        // Actually start the capture. This is the async call that requests
-        // the WindowServer to begin compositing frames for us.
+        // Start the capture.
         try await newStream.startCapture()
 
         self.stream = newStream
@@ -212,12 +213,41 @@ final class CaptureEngine: NSObject {
 
         // Update UI state on the main actor.
         await MainActor.run {
+            appState.targetWindowID = window.windowID
             appState.isStreaming = true
+            appState.isPaused = false
         }
 
-        // Begin monitoring the source app for hide/unhide so we can
-        // pause the stream indicator in the UI.
+        // Begin monitoring the window on-screen state periodically (checks for minimized/hidden)
+        Task { [weak self] in
+            while true {
+                try? await Task.sleep(nanoseconds: 500_000_000) // 0.5s
+                guard let self = self, self.isRunning else { break }
+                await self.checkWindowState()
+            }
+        }
+
+        // Begin monitoring workspace notification backups.
         setupWorkspaceMonitoring()
+    }
+
+    /// Check if the target window is currently visible on screen.
+    /// If it is minimized or hidden, it won't appear in onScreenWindowsOnly.
+    private func checkWindowState() async {
+        guard let appState = appState,
+              let targetWindowID = appState.targetWindowID else { return }
+        do {
+            let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
+            let isOnScreen = content.windows.contains { $0.windowID == targetWindowID }
+            
+            await MainActor.run {
+                if appState.isPaused != !isOnScreen {
+                    appState.isPaused = !isOnScreen
+                }
+            }
+        } catch {
+            print("[CaptureEngine] Error checking window state: \(error.localizedDescription)")
+        }
     }
 
     /// Stop the current capture session and clean up all resources.

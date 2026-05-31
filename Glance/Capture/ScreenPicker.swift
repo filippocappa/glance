@@ -221,4 +221,43 @@ enum ScreenPicker {
 
         return nil
     }
+
+    /// Identify the topmost `SCWindow` containing *point*.
+    static func window(at point: CGPoint) async throws -> SCWindow? {
+        let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
+        
+        guard let windowList = CGWindowListCopyWindowInfo(
+            [.optionOnScreenOnly, .excludeDesktopElements],
+            kCGNullWindowID
+        ) as? [[String: Any]] else {
+            return nil
+        }
+        
+        for windowInfo in windowList {
+            guard let boundsDict = windowInfo[kCGWindowBounds as String] as? [String: CGFloat],
+                  let windowID = windowInfo[kCGWindowNumber as String] as? CGWindowID,
+                  let ownerPID = windowInfo[kCGWindowOwnerPID as String] as? pid_t
+            else { continue }
+            
+            let bounds = CGRect(
+                x: boundsDict["X"] ?? 0,
+                y: boundsDict["Y"] ?? 0,
+                width: boundsDict["Width"] ?? 0,
+                height: boundsDict["Height"] ?? 0
+            )
+            
+            // Skip Glance's own windows or very small helper/system UI components
+            guard bounds.width > 30, bounds.height > 30 else { continue }
+            if ownerPID == NSRunningApplication.current.processIdentifier {
+                continue
+            }
+            
+            if bounds.contains(point) {
+                if let scWindow = content.windows.first(where: { $0.windowID == windowID }) {
+                    return scWindow
+                }
+            }
+        }
+        return nil
+    }
 }
