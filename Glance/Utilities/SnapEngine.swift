@@ -45,12 +45,16 @@ enum SnapEngine {
     /// boundaries.
     static let margin: CGFloat = 16
 
-    /// Maximum distance (in points) between the window's current origin
-    /// and a snap anchor for the snap to engage automatically. When the
-    /// user releases a drag and the nearest anchor is farther than this
-    /// threshold, the caller may choose to leave the window in place
-    /// instead of animating.
-    static let snapThreshold: CGFloat = 80
+    /// Maximum distance (in points) between the window's origin and a corner
+    /// anchor for a snap to engage on release.
+    ///
+    /// This used to be declared and never read: `snapPosition` returned the
+    /// nearest corner unconditionally and the drag handler always animated to
+    /// it, so the panel sprang back to a corner from anywhere on screen and
+    /// could not be left in the middle. Honouring the threshold is what makes
+    /// the window releasable; the value is deliberately small so the pull is
+    /// felt only right at a corner.
+    static let snapThreshold: CGFloat = 64
 
     // MARK: Anchor Calculation
 
@@ -105,35 +109,49 @@ enum SnapEngine {
     ///   - windowFrame: The window's current frame rectangle.
     ///   - screen: The screen to compute anchors for.
     /// - Returns: The `CGPoint` origin the window should animate to.
-    static func snapPosition(for windowFrame: NSRect, on screen: NSScreen) -> CGPoint {
+    static func nearestAnchor(for windowFrame: NSRect, on screen: NSScreen) -> (point: CGPoint, distance: CGFloat) {
         let anchors = snapAnchors(for: windowFrame.size, on: screen)
-        let currentOrigin = windowFrame.origin
+        let origin = windowFrame.origin
 
-        // Start with bottom-right as the fallback default
         var nearest = anchors[3]
         var minDistance = CGFloat.greatestFiniteMagnitude
 
         for anchor in anchors {
-            let dx = anchor.x - currentOrigin.x
-            let dy = anchor.y - currentOrigin.y
-            let distance = sqrt(dx * dx + dy * dy)
+            let dx = anchor.x - origin.x
+            let dy = anchor.y - origin.y
+            let distance = (dx * dx + dy * dy).squareRoot()
             if distance < minDistance {
                 minDistance = distance
                 nearest = anchor
             }
         }
-
-        return nearest
+        return (nearest, minDistance)
     }
 
-    /// Snapping is always required for release in corner-only snap mode.
+    /// The corner to snap to on release, or `nil` when the window was dropped
+    /// far enough from every corner to be left where it is.
     ///
-    /// - Parameters:
-    ///   - windowFrame: The window's frame at the end of the drag.
-    ///   - screen: The screen the window lives on.
-    /// - Returns: Always `true` to ensure the window snaps to one of the 4 corners.
-    static func shouldSnap(for windowFrame: NSRect, on screen: NSScreen) -> Bool {
-        return true
+    /// All four anchors are produced by the same inset arithmetic in
+    /// ``snapAnchors(for:on:)`` and compared with the same Euclidean distance,
+    /// so attraction and release behave identically at every corner.
+    static func snapPosition(for windowFrame: NSRect, on screen: NSScreen) -> CGPoint? {
+        let nearest = nearestAnchor(for: windowFrame, on: screen)
+        return nearest.distance <= snapThreshold ? nearest.point : nil
+    }
+
+    /// The corner to place a freshly created panel at — always snaps, since
+    /// there is no user intent to respect yet.
+    static func initialPosition(for windowFrame: NSRect, on screen: NSScreen) -> CGPoint {
+        nearestAnchor(for: windowFrame, on: screen).point
+    }
+
+    /// Keeps a window fully on screen, so it can never be dropped out of reach.
+    static func clampOnScreen(_ frame: NSRect, on screen: NSScreen) -> CGPoint {
+        let visible = screen.visibleFrame
+        return CGPoint(
+            x: min(max(frame.minX, visible.minX), max(visible.minX, visible.maxX - frame.width)),
+            y: min(max(frame.minY, visible.minY), max(visible.minY, visible.maxY - frame.height))
+        )
     }
 
     // MARK: Animation
@@ -235,7 +253,7 @@ enum SnapEngine {
     ///   - window: The PiP window to snap.
     ///   - screen: The screen whose visible frame defines snap positions.
     static func snapToNearest(window: NSWindow, on screen: NSScreen) {
-        let target = snapPosition(for: window.frame, on: screen)
+        guard let target = snapPosition(for: window.frame, on: screen) else { return }
         animateSpring(window: window, to: target)
     }
 }

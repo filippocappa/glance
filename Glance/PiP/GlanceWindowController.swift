@@ -292,7 +292,7 @@ final class GlanceWindowController: NSObject, NSWindowDelegate {
         // Snap to the nearest corner *before* ordering in, so the panel doesn't
         // visibly jump from its provisional position on the first frame.
         let screen = panel.screen ?? NSScreen.main ?? NSScreen.screens[0]
-        panel.setFrameOrigin(SnapEngine.snapPosition(for: panel.frame, on: screen))
+        panel.setFrameOrigin(SnapEngine.initialPosition(for: panel.frame, on: screen))
 
         // `orderFrontRegardless` rather than `makeKeyAndOrderFront`: Glance is a
         // background agent, so it is never the active app and AppKit will refuse
@@ -364,8 +364,11 @@ final class GlanceWindowController: NSObject, NSWindowDelegate {
             panel.setFrame(NSRect(origin: panel.frame.origin, size: safe), display: true)
             self.appState.windowSize = safe
 
+            // Resizing can push the panel off-screen; re-snap only when it is
+            // already near a corner, otherwise just keep it fully visible.
             let screen = panel.screen ?? NSScreen.main ?? NSScreen.screens[0]
             let target = SnapEngine.snapPosition(for: panel.frame, on: screen)
+                ?? SnapEngine.clampOnScreen(panel.frame, on: screen)
             if animated {
                 SnapEngine.animateSpring(window: panel, to: target)
             } else {
@@ -479,13 +482,13 @@ final class GlanceWindowController: NSObject, NSWindowDelegate {
                 self.appState.isResizing = false
                 self.appState.windowSize = panel.frame.size
 
-                // Snap only now that the mouse is up. The size itself is
-                // already valid — windowWillResize sanitised every step of it.
+                // Snap only now that the mouse is up, and only if the panel
+                // ended up near a corner. The size itself is already valid —
+                // windowWillResize sanitised every step of it.
                 let screen = panel.screen ?? NSScreen.main ?? NSScreen.screens[0]
-                SnapEngine.animateSpring(
-                    window: panel,
-                    to: SnapEngine.snapPosition(for: panel.frame, on: screen)
-                )
+                if let target = SnapEngine.snapPosition(for: panel.frame, on: screen) {
+                    SnapEngine.animateSpring(window: panel, to: target)
+                }
                 Log.window.debug("Live resize ended — size \(NSStringFromSize(panel.frame.size), privacy: .public)")
             }
         })
@@ -761,11 +764,20 @@ struct PiPContentView: View {
                         initialWindowOrigin = nil
                         appState.isDragging = false
 
+                        // Snap only when released within SnapEngine.snapThreshold
+                        // of a corner. Anywhere else the panel stays exactly
+                        // where it was dropped — it used to spring back to a
+                        // corner from any distance, which made it feel glued.
                         let screen = window.screen ?? NSScreen.main ?? NSScreen.screens[0]
-                        SnapEngine.animateSpring(
-                            window: window,
-                            to: SnapEngine.snapPosition(for: window.frame, on: screen)
-                        )
+                        if let target = SnapEngine.snapPosition(for: window.frame, on: screen) {
+                            SnapEngine.animateSpring(window: window, to: target)
+                        } else {
+                            // Still keep it reachable if flung past an edge.
+                            let clamped = SnapEngine.clampOnScreen(window.frame, on: screen)
+                            if clamped != window.frame.origin {
+                                SnapEngine.animateSpring(window: window, to: clamped)
+                            }
+                        }
                     }
             )
             .onChange(of: appState.zoomLevel) { _, newValue in

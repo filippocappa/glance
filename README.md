@@ -30,7 +30,7 @@ whatever is now sitting in those coordinates.
 | **Region capture** | Drag any rectangle, on any display, in any app. |
 | **Window-relative tracking** | The crop is anchored to the source window and follows it when moved. Falls back to display capture for desktop selections. |
 | **Ghost Mode** | Dim the panel to 55% and let every click pass through to the app behind it. Toggle with `⌥G`. |
-| **Corner snapping** | Release a drag and the panel springs to the nearest corner with an analytically-solved spring (`response 0.3`, `damping 0.6`). |
+| **Corner snapping** | Release near a corner and the panel springs to it with an analytically-solved spring (`response 0.3`, `damping 0.6`). Release anywhere else and it stays put. |
 | **Aspect-locked resize** | Drag any corner; the panel is constrained to the capture's exact ratio, so the video always fills it. |
 | **Zero-copy rendering** | Frames go straight from the WindowServer's `IOSurface` to a `CALayer`. No texture upload, no colour conversion, no CPU copy. |
 | **Menu bar only** | `LSUIElement` agent. No Dock icon, no window clutter. |

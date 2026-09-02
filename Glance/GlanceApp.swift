@@ -223,18 +223,25 @@ struct MenuBarView: View {
             Divider()
 
             Menu("Settings") {
-                // KeyboardShortcuts.Recorder needs a real window (it captures
-                // key events), so shortcut editing lives in the splash rather
-                // than inline here.
-                Button("Shortcuts & Onboarding…") { coordinator.showSettings() }
+                // Mirrors Hum's settings block: version, repository, login item,
+                // and a way back into onboarding.
+                Text("Glance \(Bundle.main.shortVersion)")
+
+                Button("GitHub Repository") {
+                    if let url = URL(string: "https://github.com/filippocappa/glance") {
+                        NSWorkspace.shared.open(url)
+                    }
+                }
 
                 Divider()
 
-                Button(LaunchAtLogin.isEnabled
-                       ? "✓ Launch at Login"
-                       : "Launch at Login") {
+                Button(LaunchAtLogin.isEnabled ? "✓ Open at Login" : "Open at Login") {
                     LaunchAtLogin.isEnabled.toggle()
                 }
+
+                // KeyboardShortcuts.Recorder captures live key events and so
+                // needs a real window; shortcut editing lives in the splash.
+                Button("Shortcuts & Onboarding…") { coordinator.showSettings() }
 
                 Divider()
 
@@ -245,8 +252,6 @@ struct MenuBarView: View {
                         Permissions.openScreenRecordingSettings()
                     }
                 }
-
-                Button("Check Permission") { coordinator.refreshPermission() }
             }
 
             if let error = coordinator.appState.errorMessage {

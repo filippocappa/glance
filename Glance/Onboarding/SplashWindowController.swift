@@ -23,6 +23,9 @@ final class SplashWindowController {
         set { UserDefaults.standard.set(newValue, forKey: didCompleteOnboardingKey) }
     }
 
+    /// Window size, shared with SplashView so the layout and the frame agree.
+    static let size = NSSize(width: 520, height: 560)
+
     private var window: NSWindow?
 
     /// Shows the splash, creating it on first use and reusing it thereafter.
@@ -35,7 +38,7 @@ final class SplashWindowController {
         }
 
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 460, height: 600),
+            contentRect: NSRect(origin: .zero, size: Self.size),
             styleMask: [.titled, .closable, .fullSizeContentView],
             backing: .buffered,
             defer: false
@@ -51,7 +54,7 @@ final class SplashWindowController {
         window.isReleasedWhenClosed = false
         window.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
 
-        let hosting = NSHostingView(rootView: SplashView(onFinish: { [weak self] in
+        let hosting = NSHostingView(rootView: SplashView(onDismiss: { [weak self] in
             Self.didCompleteOnboarding = true
             self?.close()
         }))
@@ -59,7 +62,7 @@ final class SplashWindowController {
 
         // Round the glass to match the card aesthetic.
         window.contentView?.wantsLayer = true
-        window.contentView?.layer?.cornerRadius = 12
+        window.contentView?.layer?.cornerRadius = Theme.cornerRadius
         window.contentView?.layer?.masksToBounds = true
 
         window.center()

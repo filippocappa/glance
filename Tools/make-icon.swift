@@ -19,10 +19,17 @@ import CoreGraphics
 import Foundation
 
 // MARK: - Geometry
+//
+// Rendering technique matches Hum's Tools/make-icon.swift so the two apps read
+// as a family: the same 0.06 canvas inset, the same top-lit body gradient, an
+// accent bloom behind the mark, a two-pass glyph stroke (a wide coloured glow
+// under a crisp near-white line), and a specular rim at the same weight.
+//
+// Where Hum uses a disc, Glance uses a squircle — the continuous-curvature
+// rounded rectangle macOS itself uses for app tiles.
 
-/// Apple's macOS app-icon grid: the visible tile occupies 824 of the 1024pt
-/// canvas, leaving room for the system-drawn shadow.
-let canvasRatio: CGFloat = 824.0 / 1024.0
+/// macOS icons sit inset within their canvas rather than filling it.
+let canvasInset: CGFloat = 0.06
 
 /// Continuous-corner radius as a fraction of the tile's width. macOS uses
 /// ~22.37%, which is what makes the shape read as a squircle rather than a
@@ -53,184 +60,153 @@ func drawIcon(size: CGFloat, into context: CGContext) {
         CGColor(colorSpace: space, components: [r, g, b, a])!
     }
 
-    let tile = 1024 * canvasRatio
-    let inset = (1024 - tile) / 2
-    let tileRect = CGRect(x: inset, y: inset, width: tile, height: tile)
-    let radius = tile * cornerRatio
-    let tilePath = CGPath(
-        roundedRect: tileRect,
+    let inset = 1024 * canvasInset
+    let rect = CGRect(x: inset, y: inset, width: 1024 - inset * 2, height: 1024 - inset * 2)
+    let radius = rect.width * cornerRatio
+    let tile = CGPath(
+        roundedRect: rect,
         cornerWidth: radius,
         cornerHeight: radius,
         transform: nil
     )
 
-    // ── Graphite tile ───────────────────────────────────────────────────
+    // ── Obsidian body, top-lit ──────────────────────────────────────────
     context.saveGState()
-    context.addPath(tilePath)
+    context.addPath(tile)
     context.clip()
 
     let body = CGGradient(
         colorsSpace: space,
-        colors: [rgba(0.22, 0.23, 0.26, 1), rgba(0.09, 0.09, 0.11, 1)] as CFArray,
-        locations: [0.0, 1.0]
+        colors: [rgba(0.16, 0.15, 0.17, 1), rgba(0.05, 0.05, 0.06, 1)] as CFArray,
+        locations: [0, 1]
     )!
     context.drawLinearGradient(
         body,
-        start: CGPoint(x: tileRect.midX, y: tileRect.maxY),
-        end: CGPoint(x: tileRect.midX, y: tileRect.minY),
+        start: CGPoint(x: 0, y: rect.maxY),
+        end: CGPoint(x: 0, y: rect.minY),
         options: []
     )
 
-    // Specular sweep across the upper third, as if lit from above-left.
-    let specular = CGGradient(
-        colorsSpace: space,
-        colors: [rgba(1, 1, 1, 0.16), rgba(1, 1, 1, 0.02), rgba(1, 1, 1, 0)] as CFArray,
-        locations: [0.0, 0.45, 1.0]
-    )!
-    context.drawLinearGradient(
-        specular,
-        start: CGPoint(x: tileRect.minX, y: tileRect.maxY),
-        end: CGPoint(x: tileRect.midX, y: tileRect.midY),
-        options: []
-    )
-
-    // Accent bloom in the lower right, tying the tile to the palette.
+    // Accent bloom behind the mark.
     let bloom = CGGradient(
         colorsSpace: space,
-        colors: [rgba(accent.r, accent.g, accent.b, 0.20), rgba(accent.r, accent.g, accent.b, 0)] as CFArray,
-        locations: [0.0, 1.0]
+        colors: [
+            rgba(accent.r, accent.g, accent.b, 0.22),
+            rgba(accent.r, accent.g, accent.b, 0.0)
+        ] as CFArray,
+        locations: [0, 1]
     )!
     context.drawRadialGradient(
         bloom,
-        startCenter: CGPoint(x: tileRect.maxX - tile * 0.12, y: tileRect.minY + tile * 0.12),
-        startRadius: 0,
-        endCenter: CGPoint(x: tileRect.maxX - tile * 0.12, y: tileRect.minY + tile * 0.12),
-        endRadius: tile * 0.62,
+        startCenter: CGPoint(x: rect.midX, y: rect.midY), startRadius: 0,
+        endCenter: CGPoint(x: rect.midX, y: rect.midY), endRadius: rect.width * 0.5,
         options: []
     )
-    context.restoreGState()
 
-    // Rim light: brighter along the top edge, so the tile reads as a solid
-    // object rather than a flat sticker.
-    context.saveGState()
-    context.addPath(tilePath)
-    context.setStrokeColor(rgba(1, 1, 1, 0.18))
-    context.setLineWidth(1024 * 0.0045)
-    context.strokePath()
-    context.restoreGState()
+    // ── The mark: two overlapping rounded rectangles ────────────────────
+    // Stroked, not filled — the same treatment as Hum's waveform: a wide
+    // accent glow pass beneath a crisp near-white one.
 
-    // ── Two overlapping glass panels ────────────────────────────────────
-    // Back panel: the "full screen". Front panel: the picture-in-picture,
-    // tucked into its lower-right corner and tinted with the accent.
-
-    let backW = tile * 0.62
-    let backH = backW * 0.64
+    let backW = rect.width * 0.60
+    let backH = backW * 0.66
     let backRect = CGRect(
-        x: tileRect.midX - backW / 2 - tile * 0.045,
-        y: tileRect.midY - backH / 2 + tile * 0.070,
+        x: rect.midX - backW / 2 - rect.width * 0.035,
+        y: rect.midY - backH / 2 + rect.height * 0.055,
         width: backW,
         height: backH
     )
-    let backRadius = backW * 0.11
 
-    let frontW = backW * 0.52
-    let frontH = frontW * 0.64
+    let frontW = backW * 0.50
+    let frontH = frontW * 0.66
     let frontRect = CGRect(
-        x: backRect.maxX - frontW * 0.55,
-        y: backRect.minY - frontH * 0.42,
+        x: backRect.maxX - frontW * 0.58,
+        y: backRect.minY - frontH * 0.40,
         width: frontW,
         height: frontH
     )
-    let frontRadius = frontW * 0.17
 
-    func panelPath(_ rect: CGRect, _ r: CGFloat) -> CGPath {
-        CGPath(roundedRect: rect, cornerWidth: r, cornerHeight: r, transform: nil)
+    func panel(_ r: CGRect, _ corner: CGFloat) -> CGPath {
+        CGPath(roundedRect: r, cornerWidth: corner, cornerHeight: corner, transform: nil)
     }
 
-    // Back panel — frosted white glass.
-    context.saveGState()
-    context.addPath(panelPath(backRect, backRadius))
-    context.clip()
-    let backFill = CGGradient(
-        colorsSpace: space,
-        colors: [rgba(1, 1, 1, 0.20), rgba(1, 1, 1, 0.07)] as CFArray,
-        locations: [0.0, 1.0]
-    )!
-    context.drawLinearGradient(
-        backFill,
-        start: CGPoint(x: backRect.minX, y: backRect.maxY),
-        end: CGPoint(x: backRect.maxX, y: backRect.minY),
-        options: []
-    )
-    context.restoreGState()
+    let backPath = panel(backRect, backW * 0.11)
+    let frontPath = panel(frontRect, frontW * 0.19)
+
+    // Seam: clear a band around the front panel so the back outline reads as
+    // passing behind it, then repaint the body beneath.
+    let crisp = max(s * 0.028, 1.0) / s          // widths are in the 1024 space
+    let glow = max(s * 0.070, 1.8) / s
+    let seam = glow * 1.1
+
+    func strokeTwoPass(_ path: CGPath) {
+        context.setLineJoin(.round)
+        context.setLineCap(.round)
+
+        context.addPath(path)
+        context.setStrokeColor(rgba(accent.r, accent.g, accent.b, 0.65))
+        context.setLineWidth(glow)
+        context.strokePath()
+
+        context.addPath(path)
+        context.setStrokeColor(rgba(0.93, 0.98, 1.0, 1.0))
+        context.setLineWidth(crisp)
+        context.strokePath()
+    }
+
+    // Back panel first, then knock the seam out of it.
+    strokeTwoPass(backPath)
 
     context.saveGState()
-    context.addPath(panelPath(backRect, backRadius))
-    context.setStrokeColor(rgba(1, 1, 1, 0.68))
-    context.setLineWidth(tile * 0.017)
-    context.strokePath()
-    context.restoreGState()
-
-    // Knockout so the front panel reads as floating in front of the back one.
-    let gap = tile * 0.013
-    context.saveGState()
-    context.addPath(panelPath(frontRect.insetBy(dx: -gap, dy: -gap), frontRadius + gap))
+    context.addPath(panel(frontRect.insetBy(dx: -seam, dy: -seam), frontW * 0.19 + seam))
     context.clip()
     context.setBlendMode(.clear)
-    context.fill(tileRect)
+    context.fill(rect)
     context.setBlendMode(.normal)
-    // Repaint the tile beneath the knockout.
-    context.addPath(panelPath(frontRect.insetBy(dx: -gap, dy: -gap), frontRadius + gap))
+    context.addPath(panel(frontRect.insetBy(dx: -seam, dy: -seam), frontW * 0.19 + seam))
     context.clip()
-    let under = CGGradient(
-        colorsSpace: space,
-        colors: [rgba(0.20, 0.21, 0.24, 1), rgba(0.12, 0.12, 0.14, 1)] as CFArray,
-        locations: [0.0, 1.0]
-    )!
     context.drawLinearGradient(
-        under,
-        start: CGPoint(x: tileRect.midX, y: tileRect.maxY),
-        end: CGPoint(x: tileRect.midX, y: tileRect.minY),
+        body,
+        start: CGPoint(x: 0, y: rect.maxY),
+        end: CGPoint(x: 0, y: rect.minY),
+        options: []
+    )
+    context.drawRadialGradient(
+        bloom,
+        startCenter: CGPoint(x: rect.midX, y: rect.midY), startRadius: 0,
+        endCenter: CGPoint(x: rect.midX, y: rect.midY), endRadius: rect.width * 0.5,
         options: []
     )
     context.restoreGState()
 
-    // Front panel — accent glass.
+    // Front panel: a faint accent glass fill so it reads as the live picture,
+    // then the same two-pass outline.
     context.saveGState()
-    context.addPath(panelPath(frontRect, frontRadius))
+    context.addPath(frontPath)
     context.clip()
-    let frontFill = CGGradient(
+    let glass = CGGradient(
         colorsSpace: space,
         colors: [
-            rgba(accent.r, accent.g, accent.b, 0.95),
-            rgba(accentD.r, accentD.g, accentD.b, 0.95)
+            rgba(accent.r, accent.g, accent.b, 0.34),
+            rgba(accentD.r, accentD.g, accentD.b, 0.16)
         ] as CFArray,
-        locations: [0.0, 1.0]
+        locations: [0, 1]
     )!
     context.drawLinearGradient(
-        frontFill,
+        glass,
         start: CGPoint(x: frontRect.minX, y: frontRect.maxY),
         end: CGPoint(x: frontRect.maxX, y: frontRect.minY),
         options: []
     )
-    // Glass highlight across the top half of the panel.
-    context.saveGState()
-    context.addPath(panelPath(
-        CGRect(x: frontRect.minX, y: frontRect.midY, width: frontRect.width, height: frontRect.height / 2),
-        frontRadius
-    ))
-    context.clip()
-    context.setFillColor(rgba(1, 1, 1, 0.18))
-    context.fill(frontRect)
-    context.restoreGState()
     context.restoreGState()
 
-    context.saveGState()
-    context.addPath(panelPath(frontRect, frontRadius))
-    context.setStrokeColor(rgba(1, 1, 1, 0.85))
-    context.setLineWidth(tile * 0.011)
-    context.strokePath()
+    strokeTwoPass(frontPath)
     context.restoreGState()
+
+    // ── Specular rim, brightest at the top edge ─────────────────────────
+    context.addPath(tile)
+    context.setStrokeColor(rgba(1, 1, 1, 0.16))
+    context.setLineWidth(max(s * 0.006, 0.75) / s)
+    context.strokePath()
 }
 
 // MARK: - Rasterisation
