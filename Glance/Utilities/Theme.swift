@@ -1,84 +1,63 @@
 // Theme.swift
 // Glance
 //
-// The single source of truth for Glance's accent colour.
+// A strictly monochrome design system.
 //
-// Everything tinted in the app — selection crosshairs, the drag rectangle,
-// active hover controls, the splash, the menu bar icon's active state and the
-// app icon itself — resolves through here, so the palette can be changed in one
-// place. `Assets.xcassets/AccentColor.colorset` carries the same values so that
-// SwiftUI's `Color.accentColor` and AppKit's `NSColor.controlAccentColor`
-// fallbacks match rather than reverting to system blue.
+// Glance draws over the user's own content — their windows, their wallpaper,
+// their video. A brand hue competes with all of it and dates quickly; white at
+// graded alphas reads correctly against anything, which is why the system UI
+// (screenshot selection, window chrome) works the same way.
+//
+// There is exactly one colour here. Depth comes from the alpha ladder below,
+// never from a second hue.
 
 import SwiftUI
 import AppKit
 
 enum Theme {
 
-    // MARK: Accent — electric cyan
-
-    /// Primary accent. sRGB #0FCBF5.
-    static let accentComponents: (r: CGFloat, g: CGFloat, b: CGFloat) = (0.059, 0.796, 0.961)
-
-    /// Deeper end of the accent, for gradients and pressed states. sRGB #0A87C4.
-    static let accentDeepComponents: (r: CGFloat, g: CGFloat, b: CGFloat) = (0.039, 0.529, 0.769)
-
-    static let accent = Color(
-        .sRGB,
-        red: accentComponents.r,
-        green: accentComponents.g,
-        blue: accentComponents.b
-    )
-
-    static let accentDeep = Color(
-        .sRGB,
-        red: accentDeepComponents.r,
-        green: accentDeepComponents.g,
-        blue: accentDeepComponents.b
-    )
-
-    /// Top-left → bottom-right accent gradient used on the splash glyph and
-    /// the app icon's foreground panel.
-    static let accentGradient = LinearGradient(
-        colors: [accent, accentDeep],
-        startPoint: .topLeading,
-        endPoint: .bottomTrailing
-    )
-
-    // MARK: AppKit equivalents
-
-    static let accentNSColor = NSColor(
-        srgbRed: accentComponents.r,
-        green: accentComponents.g,
-        blue: accentComponents.b,
-        alpha: 1.0
-    )
-
-    // MARK: Monochrome (onboarding)
+    // MARK: Alpha ladder
     //
-    // The splash deliberately stays achromatic: a solid white action pill, a
-    // diffuse silver glow, and neutral control tints. Colour is reserved for
-    // the parts of the app that sit over the user's own content — the selection
-    // overlay and the PiP chrome — where the cyan accent carries meaning.
+    // Every tint in the app is white at one of these levels. Introducing an
+    // intermediate value is usually a sign the hierarchy is wrong, not that a
+    // new step is needed.
 
-    /// Near-white, very slightly cool, for the primary action pill and glyph.
-    static let mono = Color(.sRGB, red: 0.95, green: 0.96, blue: 0.98)
+    /// Primary content: active icons, key text, the selection border.
+    static let primaryAlpha: CGFloat = 1.00
+    /// Secondary content: inactive icons, supporting text.
+    static let secondaryAlpha: CGFloat = 0.70
+    /// Tertiary: hairlines and inactive strokes.
+    static let tertiaryAlpha: CGFloat = 0.30
+    /// Subtle fills: hover washes, selected backgrounds.
+    static let subtleAlpha: CGFloat = 0.15
+    /// Borders on frosted surfaces.
+    static let borderAlpha: CGFloat = 0.12
 
-    /// Text colour on top of a solid `mono` fill.
+    // MARK: Accent
+    //
+    // Named `accent` so call sites read intentionally, but it is pure white.
+    // Anything that needs to recede uses `.opacity()` from the ladder above.
+
+    static let accent = Color.white
+    static let accentNSColor = NSColor.white
+
+    /// Solid white for the primary action pill, and the dark ink that sits on it.
+    static let mono = Color.white
     static let onMono = Color(.sRGB, red: 0.06, green: 0.07, blue: 0.09)
 
-    /// Control tint inside the splash — silver rather than the cyan accent.
-    static let monoTint = Color(.sRGB, red: 0.86, green: 0.89, blue: 0.94)
+    /// Control tint (toggles, shortcut recorder pills). Pure white, not silver:
+    /// a grey tint reads as a disabled control rather than an active one.
+    static let monoTint = Color.white
 
     // MARK: Surfaces
     //
     // Vocabulary shared with Hum so the two apps read as one family: the same
     // card fills, hairline strokes, corner radii and transition curve.
 
-    /// Card surfaces, shared by the splash rows and the settings sheet.
+    /// Card surfaces, shared by the splash rows and the control HUD.
     static let cardFill = Color.white.opacity(0.04)
     static let cardFillHover = Color.white.opacity(0.08)
-    static let cardStroke = Color.white.opacity(0.08)
+    static let cardStroke = Color.white.opacity(borderAlpha)
     static let hairline = Color.primary.opacity(0.08)
 
     /// Darkening laid over the vibrancy so light text keeps its contrast.
@@ -91,16 +70,7 @@ enum Theme {
     /// Window corner radius.
     static let cornerRadius: CGFloat = 20
 
-    /// Every accent-driven change uses this exact curve, so tinted elements
-    /// cross-fade as one rather than at three speeds.
+    /// Every state change uses this exact curve, so tinted elements cross-fade
+    /// as one rather than at three speeds.
     static let accentTransition = Animation.easeInOut(duration: 0.25)
-
-    // MARK: AppKit equivalents
-
-    static let accentDeepNSColor = NSColor(
-        srgbRed: accentDeepComponents.r,
-        green: accentDeepComponents.g,
-        blue: accentDeepComponents.b,
-        alpha: 1.0
-    )
 }

@@ -3,8 +3,7 @@ import KeyboardShortcuts
 
 // MARK: - HoverControlsView
 // ─────────────────────────────────────────────────────────────────────────────
-// The control bar that fades in over the video when the cursor is inside the
-// PiP panel.
+// A single floating capsule HUD that fades in over the video on hover.
 //
 // Glance is a SINGLE-window app: this bar is a SwiftUI layer inside the same
 // NSPanel as the video, not a separate child window. (It used to live in a
@@ -12,142 +11,96 @@ import KeyboardShortcuts
 // was removed because keeping the two frames in sync during a drag produced
 // visible ghosting.)
 //
-// Controls, left to right:
-//   ×   Close       — stops the capture and closes the PiP.
-//   ⧉   Show source — activates the app that owns the captured window, bringing
-//                     the real window forward. It does NOT toggle click-through
-//                     and does NOT change the capture.
-//   ⚙︎  Size        — zoom presets (50%-200%) that resize the PiP panel only;
-//                     the stream keeps running at its source resolution.
+// It sits bottom-centre rather than spanning the top edge. A full-width bar
+// with a control pinned to each end reads as window chrome and crowds the
+// corners — where the Ghost Mode exit badge and the resize handles already
+// live. A centred capsule is a discrete object floating over the content, the
+// way transport controls sit in a video player.
 //
-// Click-through ("ghost mode") is automatic and has no button: the panel passes
-// clicks through whenever the cursor is outside it, and becomes interactive on
-// hover. See GlanceWindowController.
+// Controls, left to right:
+//   ×   Close        — stops the capture and closes the PiP.
+//   ⧉   Show source  — activates the app that owns the captured window and
+//                      un-minimises it. Does NOT change the capture.
+//   ⃠   Ghost Mode   — dims the panel and passes clicks through.
+//   ⤢   Size         — zoom presets that resize the panel only; the stream
+//                      keeps running at its source resolution.
+//
+// Click-through is automatic and has no button of its own: the panel passes
+// clicks through whenever the cursor is outside it. Ghost Mode is the manual,
+// sticky version of the same thing. See GlanceWindowController.
 // ─────────────────────────────────────────────────────────────────────────────
 
 struct HoverControlsView: View {
-    
-    // MARK: - Properties
-    
-    /// Tracks whether the cursor is currently inside the PiP window bounds.
-    /// Drives the show/hide animation for the controls bar.
+
+    /// Whether the cursor is inside the PiP window. Drives the HUD's presence.
     let isHovering: Bool
 
-    /// Whether Ghost Mode is engaged, so the button can render its active state.
+    /// Whether Ghost Mode is engaged, so its control can render an active state.
     let isGhostMode: Bool
-    
-    // MARK: - Callbacks & Bindings
-    
-    /// Called when the user clicks the close button.
+
     var onClose: () -> Void
-    
-    /// Called when the user clicks the "bring to front" button.
     var onBringToFront: () -> Void
-
-    /// Called when the user toggles Ghost Mode.
     var onToggleGhostMode: () -> Void
-    
-    /// Two-way binding to the current zoom level in AppState.
-    /// The zoom menu sets this value; the window controller reads it to
-    /// resize the PiP window accordingly.
-    var zoomLevel: Binding<CGFloat>
-    
-    // MARK: - Body
-    
-    var body: some View {
-        ZStack(alignment: .topLeading) {
-            if isHovering {
-                // MARK: Controls Bar
-                // Slides down from the top when hovering. Contains close button
-                // on the left, bring-to-front and settings on the right.
-                VStack(spacing: 0) {
-                    HStack(spacing: 12) {
-                        // Close button — prominent placement on the left,
-                        // matching macOS window control conventions
-                        Button(action: onClose) {
-                            Image(systemName: "xmark.circle.fill")
-                                .font(.system(size: 18))
-                                .foregroundStyle(.white.opacity(0.9))
-                                .shadow(color: .black.opacity(0.5), radius: 2)
-                        }
-                        .buttonStyle(.plain)
-                        .help("Close — stop capturing and close this PiP")
-                        .accessibilityLabel("Close Glance")
-                        
-                        Spacer()
-                        
-                        // Activates the source application so its real window
-                        // comes forward. Purely a convenience — it does not
-                        // affect the stream, and it is NOT a click-through
-                        // toggle (click-through is automatic on hover).
-                        Button(action: onBringToFront) {
-                            Image(systemName: "macwindow.on.rectangle")
-                                .font(.system(size: 14))
-                                .foregroundStyle(.white.opacity(0.9))
-                                .shadow(color: .black.opacity(0.5), radius: 2)
-                        }
-                        .buttonStyle(.plain)
-                        .help("Show source — bring the original window to the front")
-                        .accessibilityLabel("Bring source window to front")
 
-                        // Ghost Mode — dim the PiP and let clicks pass straight
-                        // through to whatever is behind it.
-                        Button(action: onToggleGhostMode) {
-                            Image(systemName: isGhostMode
-                                  ? "cursorarrow.slash.square.fill"
-                                  : "cursorarrow.slash")
-                                .font(.system(size: 14))
-                                .foregroundStyle(isGhostMode
-                                                 ? AnyShapeStyle(Theme.accent)
-                                                 : AnyShapeStyle(.white.opacity(0.9)))
-                                .shadow(color: .black.opacity(0.5), radius: 2)
-                        }
-                        .buttonStyle(.plain)
-                        .help("Ghost Mode — dim the PiP and click through it (\(Self.ghostShortcutLabel))")
-                        .accessibilityLabel("Toggle Ghost Mode")
-                        
-                        // Zoom level menu — provides quick preset zoom values.
-                        // Using a Menu instead of a Picker for cleaner styling
-                        // and because we want specific percentage labels.
-                        Menu {
-                            Text("PiP window size")
-                            Divider()
-                            Button("50%") { zoomLevel.wrappedValue = 0.5 }
-                            Button("75%") { zoomLevel.wrappedValue = 0.75 }
-                            Button("100%") { zoomLevel.wrappedValue = 1.0 }
-                            Button("150%") { zoomLevel.wrappedValue = 1.5 }
-                            Button("200%") { zoomLevel.wrappedValue = 2.0 }
-                        } label: {
-                            Image(systemName: "gearshape.fill")
-                                .font(.system(size: 14))
-                                .foregroundStyle(.white.opacity(0.9))
-                                .shadow(color: .black.opacity(0.5), radius: 2)
-                        }
-                        .menuStyle(.borderlessButton)
-                        .fixedSize()
-                        .help("Size — scale this PiP window (the capture is unchanged)")
-                        .accessibilityLabel("PiP size")
-                    }
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 8)
-                    .background(
-                        // Vibrancy blur that samples the content behind the window,
-                        // giving the controls bar a native macOS "HUD" appearance
-                        VisualEffectBlur(material: .hudWindow, blendingMode: .withinWindow)
-                            .clipShape(RoundedRectangle(cornerRadius: 8))
-                            .overlay(
-                                RoundedRectangle(cornerRadius: 8)
-                                    .strokeBorder(Theme.accent.opacity(0.35), lineWidth: 1)
-                            )
-                    )
-                    .padding(8)
-                    
-                    Spacer()
-                }
-                // Combined transition: fades in while sliding down from top edge
-                .transition(.opacity.combined(with: .move(edge: .top)))
-            }
+    /// Two-way binding to the current zoom level in AppState.
+    var zoomLevel: Binding<CGFloat>
+
+    var body: some View {
+        VStack {
+            Spacer()
+            hud
+                .padding(.bottom, 10)
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        // Scale-in from slightly small, so the HUD reads as arriving rather
+        // than blinking on.
+        .opacity(isHovering ? 1 : 0)
+        .scaleEffect(isHovering ? 1 : 0.92, anchor: .bottom)
+        .animation(.spring(response: 0.28, dampingFraction: 0.82), value: isHovering)
+        // Fully inert when hidden, so an invisible HUD cannot eat clicks meant
+        // for the video beneath it.
+        .allowsHitTesting(isHovering)
+    }
+
+    private var hud: some View {
+        HStack(spacing: 2) {
+            ControlPill(
+                symbol: "xmark",
+                help: "Close — stop capturing and close this PiP",
+                accessibility: "Close Glance",
+                action: onClose
+            )
+
+            ControlPill(
+                symbol: "arrow.up.forward.app",
+                help: "Show source — bring the original window to the front",
+                accessibility: "Bring source window to front",
+                action: onBringToFront
+            )
+
+            ControlPill(
+                symbol: "cursorarrow.slash",
+                help: "Ghost Mode — dim the PiP and click through it (\(Self.ghostShortcutLabel))",
+                accessibility: "Toggle Ghost Mode",
+                isActive: isGhostMode,
+                action: onToggleGhostMode
+            )
+
+            ZoomPill(zoomLevel: zoomLevel)
+        }
+        .padding(.horizontal, 5)
+        .padding(.vertical, 5)
+        .background(
+            Capsule(style: .continuous)
+                .fill(.ultraThinMaterial)
+                .environment(\.colorScheme, .dark)
+        )
+        .overlay(
+            Capsule(style: .continuous)
+                .strokeBorder(.white.opacity(Theme.borderAlpha), lineWidth: 1)
+        )
+        .shadow(color: .black.opacity(0.35), radius: 10, y: 3)
+        .fixedSize()
     }
 }
 
@@ -158,6 +111,85 @@ extension HoverControlsView {
     static var ghostShortcutLabel: String {
         KeyboardShortcuts.getShortcut(for: .toggleGhostMode)
             .map(String.init(describing:)) ?? "no shortcut set"
+    }
+}
+
+// MARK: - ControlPill
+
+/// One circular control inside the HUD capsule.
+///
+/// Hover is expressed as a white wash behind the glyph plus a lift in the
+/// glyph's own opacity — no colour, no ring. Active state (Ghost Mode engaged)
+/// is a stronger, persistent version of the same wash, so "hovered" and
+/// "engaged" read as points on one scale rather than two different languages.
+private struct ControlPill: View {
+    let symbol: String
+    let help: String
+    let accessibility: String
+    var isActive: Bool = false
+    var action: () -> Void
+
+    @State private var hovering = false
+
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: symbol)
+                .font(.system(size: 12.5, weight: .medium))
+                .foregroundStyle(
+                    .white.opacity(isActive || hovering ? Theme.primaryAlpha : Theme.secondaryAlpha)
+                )
+                .frame(width: 28, height: 28)
+                .background(
+                    Circle().fill(
+                        .white.opacity(isActive ? Theme.subtleAlpha
+                                       : (hovering ? 0.10 : 0))
+                    )
+                )
+                .contentShape(Circle())
+        }
+        .buttonStyle(.plain)
+        .onHover { hovering = $0 }
+        .animation(.easeOut(duration: 0.12), value: hovering)
+        .animation(.easeOut(duration: 0.15), value: isActive)
+        .help(help)
+        .accessibilityLabel(accessibility)
+    }
+}
+
+// MARK: - ZoomPill
+
+/// The size control. A `Menu` rather than a `Button`, but styled to be
+/// indistinguishable from its neighbours — the stock menu chrome would
+/// otherwise break the run of circular glyphs.
+private struct ZoomPill: View {
+    var zoomLevel: Binding<CGFloat>
+
+    @State private var hovering = false
+
+    var body: some View {
+        Menu {
+            Text("PiP window size")
+            Divider()
+            Button("50%") { zoomLevel.wrappedValue = 0.5 }
+            Button("75%") { zoomLevel.wrappedValue = 0.75 }
+            Button("100%") { zoomLevel.wrappedValue = 1.0 }
+            Button("150%") { zoomLevel.wrappedValue = 1.5 }
+            Button("200%") { zoomLevel.wrappedValue = 2.0 }
+        } label: {
+            Image(systemName: "arrow.up.left.and.arrow.down.right")
+                .font(.system(size: 12, weight: .medium))
+                .foregroundStyle(.white.opacity(hovering ? Theme.primaryAlpha : Theme.secondaryAlpha))
+                .frame(width: 28, height: 28)
+                .background(Circle().fill(.white.opacity(hovering ? 0.10 : 0)))
+                .contentShape(Circle())
+        }
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
+        .fixedSize()
+        .onHover { hovering = $0 }
+        .animation(.easeOut(duration: 0.12), value: hovering)
+        .help("Size — scale this PiP window (the capture is unchanged)")
+        .accessibilityLabel("PiP size")
     }
 }
 
@@ -173,19 +205,26 @@ extension HoverControlsView {
 struct GhostExitBadge: View {
     var action: () -> Void
 
+    @State private var hovering = false
+
     var body: some View {
         Button(action: action) {
-            Image(systemName: "cursorarrow.slash.square.fill")
-                .font(.system(size: 16))
-                .foregroundStyle(.white)
+            Image(systemName: "cursorarrow.slash")
+                .font(.system(size: 14, weight: .medium))
+                .foregroundStyle(.white.opacity(hovering ? 1.0 : 0.85))
                 .frame(width: 34, height: 34)
                 .background(
                     Circle()
-                        .fill(.black.opacity(0.6))
-                        .overlay(Circle().strokeBorder(Theme.accent.opacity(0.9), lineWidth: 1.5))
+                        .fill(.black.opacity(0.55))
+                        .overlay(Circle().strokeBorder(
+                            .white.opacity(hovering ? 0.55 : 0.30), lineWidth: 1
+                        ))
                 )
+                .contentShape(Circle())
         }
         .buttonStyle(.plain)
+        .onHover { hovering = $0 }
+        .animation(.easeOut(duration: 0.12), value: hovering)
         .help("Leave Ghost Mode (\(HoverControlsView.ghostShortcutLabel))")
         .accessibilityLabel("Leave Ghost Mode")
     }
@@ -197,21 +236,18 @@ struct GhostExitBadge: View {
 ///
 /// SwiftUI doesn't natively expose NSVisualEffectView, so we bridge it via
 /// NSViewRepresentable. This gives us access to macOS vibrancy materials
-/// (e.g., `.hudWindow`, `.fullScreenUI`) for native-looking translucent
+/// (e.g. `.hudWindow`, `.fullScreenUI`) for native-looking translucent
 /// backgrounds.
 struct VisualEffectBlur: NSViewRepresentable {
-    
+
     /// The material type determines the appearance and blur radius.
-    /// Common choices:
-    /// - `.hudWindow`: Dark, high-contrast blur for floating controls
-    /// - `.fullScreenUI`: Heavy blur for modal overlays
     let material: NSVisualEffectView.Material
-    
+
     /// How the blur composites with content:
     /// - `.behindWindow`: Blurs content from windows behind this one
     /// - `.withinWindow`: Blurs content within the same window
     let blendingMode: NSVisualEffectView.BlendingMode
-    
+
     func makeNSView(context: Context) -> NSVisualEffectView {
         let view = NSVisualEffectView()
         view.material = material
@@ -222,7 +258,7 @@ struct VisualEffectBlur: NSViewRepresentable {
         view.state = .active
         return view
     }
-    
+
     func updateNSView(_ nsView: NSVisualEffectView, context: Context) {
         nsView.material = material
         nsView.blendingMode = blendingMode

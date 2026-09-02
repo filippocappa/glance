@@ -121,7 +121,7 @@ class SelectionOverlayView: NSView {
         // presence tells the user that capture will follow that window, and its
         // absence that Glance is falling back to display capture.
         if let target = candidateRectInView {
-            context.setStrokeColor(Theme.accentNSColor.withAlphaComponent(0.85).cgColor)
+            context.setStrokeColor(Theme.accentNSColor.withAlphaComponent(0.9).cgColor)
             context.setLineWidth(2)
             context.setLineDash(phase: 0, lengths: [6, 4])
             let path = CGPath(
@@ -133,7 +133,7 @@ class SelectionOverlayView: NSView {
             context.setLineDash(phase: 0, lengths: [])
 
             // Faint wash so the window reads as "chosen" rather than merely outlined.
-            context.setFillColor(Theme.accentNSColor.withAlphaComponent(0.06).cgColor)
+            context.setFillColor(Theme.accentNSColor.withAlphaComponent(0.08).cgColor)
             context.addPath(path)
             context.fillPath()
         }
@@ -161,7 +161,7 @@ class SelectionOverlayView: NSView {
             context.setShadow(
                 offset: .zero,
                 blur: 10,
-                color: Theme.accentNSColor.withAlphaComponent(0.7).cgColor
+                color: NSColor.black.withAlphaComponent(0.55).cgColor
             )
             context.setStrokeColor(Theme.accentNSColor.withAlphaComponent(0.45).cgColor)
             context.setLineWidth(0.75)
@@ -187,7 +187,7 @@ class SelectionOverlayView: NSView {
     /// white tint so they're visible against the dimmed background but
     /// not visually distracting.
     private func drawCrosshair(at point: NSPoint, in context: CGContext) {
-        context.setStrokeColor(Theme.accentNSColor.withAlphaComponent(0.75).cgColor)
+        context.setStrokeColor(Theme.accentNSColor.withAlphaComponent(Theme.secondaryAlpha).cgColor)
         context.setLineWidth(0.75)
 
         // Vertical guide line (top to bottom of view)
@@ -212,7 +212,7 @@ class SelectionOverlayView: NSView {
         let text = "\(Int(rect.width)) × \(Int(rect.height))"
         let attrs: [NSAttributedString.Key: Any] = [
             .font: NSFont.monospacedSystemFont(ofSize: 12, weight: .medium),
-            .foregroundColor: Theme.accentNSColor
+            .foregroundColor: NSColor.white
         ]
         let attrString = NSAttributedString(string: text, attributes: attrs)
         let textSize = attrString.size()

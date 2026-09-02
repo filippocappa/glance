@@ -57,6 +57,23 @@ enum SnapEngine {
     /// felt only right at a corner.
     static let snapThreshold: CGFloat = 64
 
+    /// Attraction radius for the corner the window is *leaving*.
+    ///
+    /// Deliberately tiny. Pulling out of the corner you are already in should
+    /// meet no resistance; a large radius here is what makes a window feel glued
+    /// to where it started.
+    static let escapeRadius: CGFloat = 36
+
+    /// Attraction radius for the other three corners on a slow drag.
+    ///
+    /// Much larger than the escape radius, so the window is easy to detach but
+    /// eager to dock somewhere new — the asymmetry is the whole feel.
+    static let approachRadius: CGFloat = 190
+
+    /// Attraction radius for the other three corners when the window is thrown.
+    /// A flick is an unambiguous statement of intent, so it gets the widest net.
+    static let flickApproachRadius: CGFloat = 460
+
     /// Release speed, in points per second, above which a drag is treated as a
     /// flick and carries momentum instead of stopping dead.
     static let flickThreshold: CGFloat = 220
@@ -153,6 +170,47 @@ enum SnapEngine {
     static func snapPosition(for windowFrame: NSRect, on screen: NSScreen) -> CGPoint? {
         let nearest = nearestAnchor(for: windowFrame, on: screen)
         return nearest.distance <= snapThreshold ? nearest.point : nil
+    }
+
+    /// Directional variant: the corner the drag started from is weakly
+    /// attractive, every other corner strongly so.
+    ///
+    /// - Parameters:
+    ///   - windowFrame: The frame to evaluate (the release point, or a
+    ///     projected landing point for a throw).
+    ///   - dragOrigin: Where the window sat when the drag began, used to
+    ///     identify the corner being left.
+    ///   - approach: Attraction radius applied to the other three corners.
+    static func snapPosition(
+        for windowFrame: NSRect,
+        on screen: NSScreen,
+        leaving dragOrigin: CGPoint,
+        approach: CGFloat
+    ) -> CGPoint? {
+        let anchors = snapAnchors(for: windowFrame.size, on: screen)
+        let origin = windowFrame.origin
+
+        // The corner the window started in, if it started in one at all.
+        let home = anchors.min { a, b in
+            hypot(a.x - dragOrigin.x, a.y - dragOrigin.y)
+                < hypot(b.x - dragOrigin.x, b.y - dragOrigin.y)
+        }
+        let startedDocked = home.map {
+            hypot($0.x - dragOrigin.x, $0.y - dragOrigin.y) <= snapThreshold
+        } ?? false
+
+        var best: CGPoint?
+        var bestDistance = CGFloat.greatestFiniteMagnitude
+
+        for anchor in anchors {
+            let distance = hypot(anchor.x - origin.x, anchor.y - origin.y)
+            let isHome = startedDocked && anchor == home
+            let radius = isHome ? escapeRadius : approach
+            guard distance <= radius, distance < bestDistance else { continue }
+            bestDistance = distance
+            best = anchor
+        }
+        return best
     }
 
     /// The corner to place a freshly created panel at — always snaps, since
@@ -354,13 +412,21 @@ enum SnapEngine {
     /// The projected landing point — not the release point — chooses the
     /// corner, so a window flicked *toward* a corner lands in it even when the
     /// mouse was released far away.
-    static func release(window: NSWindow, velocity: CGVector, on screen: NSScreen) {
+    static func release(
+        window: NSWindow,
+        velocity: CGVector,
+        from dragOrigin: CGPoint,
+        on screen: NSScreen
+    ) {
         let speed = hypot(velocity.dx, velocity.dy)
 
         guard speed > flickThreshold else {
-            // Gentle release: snap only if already near a corner, otherwise
-            // leave it exactly where it was dropped.
-            if let target = snapPosition(for: window.frame, on: screen) {
+            // Slow release: the corner being left is only weakly attractive, so
+            // the window detaches easily, while the other three pull hard.
+            if let target = snapPosition(
+                for: window.frame, on: screen,
+                leaving: dragOrigin, approach: approachRadius
+            ) {
                 animateSpring(window: window, to: target, on: screen)
             } else {
                 let clamped = clampOnScreen(window.frame, on: screen)
@@ -371,9 +437,31 @@ enum SnapEngine {
             return
         }
 
+        // Thrown. Choose the destination from where the throw would come to
+        // rest, and only consider corners that lie *ahead* of the travel
+        // direction — otherwise a hard flick can dock in the corner behind it,
+        // which reads as the window bouncing back.
         let landing = projectedOrigin(from: window.frame, velocity: velocity, on: screen)
-        let projectedFrame = NSRect(origin: landing, size: window.frame.size)
-        let target = snapPosition(for: projectedFrame, on: screen) ?? landing
+        let projected = NSRect(origin: landing, size: window.frame.size)
+        let heading = CGVector(dx: velocity.dx / speed, dy: velocity.dy / speed)
+
+        let ahead = snapAnchors(for: window.frame.size, on: screen).filter { anchor in
+            let toAnchor = CGVector(
+                dx: anchor.x - window.frame.minX,
+                dy: anchor.y - window.frame.minY
+            )
+            return toAnchor.dx * heading.dx + toAnchor.dy * heading.dy > 0
+        }
+
+        let target = ahead
+            .map { ($0, hypot($0.x - landing.x, $0.y - landing.y)) }
+            .filter { $0.1 <= flickApproachRadius }
+            .min { $0.1 < $1.1 }?.0
+            ?? snapPosition(
+                for: projected, on: screen,
+                leaving: dragOrigin, approach: flickApproachRadius
+            )
+            ?? landing
 
         animateSpring(window: window, to: target, velocity: velocity, on: screen)
     }

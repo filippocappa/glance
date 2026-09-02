@@ -379,8 +379,27 @@ final class GlanceWindowController: NSObject, NSWindowDelegate {
 
     // MARK: - Ghost Mode
 
-    /// Flip Ghost Mode.
+    /// Earliest time the next Ghost Mode toggle will be honoured.
+    private var ghostToggleUnlockTime: CFTimeInterval = 0
+
+    /// Minimum gap between honoured toggles.
+    ///
+    /// The alpha cross-fade and the `ignoresMouseEvents` flip are not atomic
+    /// with respect to each other. Spamming the hotkey interleaved them, and a
+    /// pair that landed out of order left the panel dim but opaque to clicks,
+    /// or interactive but with the HUD hidden — either way, unusable. Rejecting
+    /// presses until the previous transition has settled removes the window in
+    /// which that can happen.
+    private static let ghostToggleDebounce: CFTimeInterval = 0.25
+
+    /// Flip Ghost Mode, ignoring presses that arrive mid-transition.
     func toggleGhostMode() {
+        let now = CACurrentMediaTime()
+        guard now >= ghostToggleUnlockTime else {
+            Log.window.debug("Ghost Mode toggle debounced")
+            return
+        }
+        ghostToggleUnlockTime = now + Self.ghostToggleDebounce
         setGhostMode(!appState.isGhostMode)
     }
 
@@ -397,6 +416,17 @@ final class GlanceWindowController: NSObject, NSWindowDelegate {
         NSAnimationContext.runAnimationGroup { context in
             context.duration = 0.2
             panel.animator().alphaValue = enabled ? Self.ghostAlpha : 1.0
+        } completionHandler: { [weak self] in
+            // Land on the exact end value. An interrupted implicit animation
+            // can otherwise leave alpha part-way, which reads as a stuck
+            // half-ghosted panel.
+            //
+            // NSAnimationContext calls this on the main thread but types the
+            // closure as Sendable, so the isolation has to be asserted.
+            MainActor.assumeIsolated {
+                guard let self, let panel = self.panel else { return }
+                panel.alphaValue = self.appState.isGhostMode ? Self.ghostAlpha : 1.0
+            }
         }
 
         if enabled {
@@ -404,9 +434,22 @@ final class GlanceWindowController: NSObject, NSWindowDelegate {
             appState.isHovering = false
             hostingView?.ghostHitRect = badgeRectInView()
         } else {
+            // Restore unconditionally rather than deriving from cursor
+            // position: these two are the state that gets stranded, so they are
+            // reset first and asked questions afterwards.
             hostingView?.ghostHitRect = nil
-            // Fall back to the normal hover rule: click-through until entered.
-            panel.ignoresMouseEvents = !panel.frame.contains(NSEvent.mouseLocation)
+            panel.ignoresMouseEvents = false
+
+            // If the cursor is already inside, adopt the hover state now. The
+            // global monitor only fires on movement, so a stationary cursor
+            // would otherwise leave the HUD hidden over an interactive panel.
+            let inside = panel.frame.contains(NSEvent.mouseLocation)
+            if inside {
+                withAnimation(.easeInOut(duration: 0.15)) { appState.isHovering = true }
+            } else {
+                appState.isHovering = false
+                panel.ignoresMouseEvents = true
+            }
         }
 
         Log.window.info("Ghost Mode \(enabled ? "engaged" : "released", privacy: .public)")
@@ -783,7 +826,7 @@ struct PiPContentView: View {
                         ))
                     }
                     .onEnded { _ in
-                        guard dragAnchor != nil else { return }
+                        guard let startOrigin = dragAnchor?.windowOrigin else { return }
                         dragAnchor = nil
                         appState.isDragging = false
 
@@ -791,7 +834,12 @@ struct PiPContentView: View {
                         // release velocity chooses the target and seeds the
                         // spring that carries the window to it.
                         let screen = window.screen ?? NSScreen.main ?? NSScreen.screens[0]
-                        SnapEngine.release(window: window, velocity: releaseVelocity(), on: screen)
+                        SnapEngine.release(
+                            window: window,
+                            velocity: releaseVelocity(),
+                            from: startOrigin,
+                            on: screen
+                        )
                         velocitySamples = []
                     }
             )
