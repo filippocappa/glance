@@ -16,6 +16,7 @@
 		551A07477CC4D773FA2F32AC /* Permissions.swift in Sources */ = {isa = PBXBuildFile; fileRef = 51D4FA4827E4AFF5A2C26F25 /* Permissions.swift */; };
 		5DAB0CAACDF82305FDAB157D /* SelectionCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9ADD14384D3DAF9A5756F764 /* SelectionCoordinator.swift */; };
 		65C6D168B5A231F77EBE069D /* ScreenPicker.swift in Sources */ = {isa = PBXBuildFile; fileRef = 79AE5C7305B25F64C60CB89E /* ScreenPicker.swift */; };
+		853577C811B8BF02D6CC924E /* Theme.swift in Sources */ = {isa = PBXBuildFile; fileRef = 605AC61DB8196A2411E693E1 /* Theme.swift */; };
 		8BECC6DD8713E582F72DFCDF /* GlanceWindowController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 714395DCA90EA00A0F6952BA /* GlanceWindowController.swift */; };
 		8DD6AC6D1958BBFF53D72C32 /* SnapEngine.swift in Sources */ = {isa = PBXBuildFile; fileRef = E2BF0AAAAD9B0FEEFC1A6E2A /* SnapEngine.swift */; };
 		AC925F48D9DCBBE0DC2BA176 /* GlanceApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = DABC3538525DB0E0FB7C5869 /* GlanceApp.swift */; };
@@ -40,6 +41,7 @@
 		51D4FA4827E4AFF5A2C26F25 /* Permissions.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Permissions.swift; sourceTree = "<group>"; };
 		5A9A4E964DE5D0DDE115FE9B /* SelectionOverlayView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SelectionOverlayView.swift; sourceTree = "<group>"; };
 		5E4297650E52E1C6A9F854E7 /* Log.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Log.swift; sourceTree = "<group>"; };
+		605AC61DB8196A2411E693E1 /* Theme.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Theme.swift; sourceTree = "<group>"; };
 		63CC0E0339EC5E42E21D7B22 /* Shortcuts.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Shortcuts.swift; sourceTree = "<group>"; };
 		714395DCA90EA00A0F6952BA /* GlanceWindowController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GlanceWindowController.swift; sourceTree = "<group>"; };
 		79AE5C7305B25F64C60CB89E /* ScreenPicker.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScreenPicker.swift; sourceTree = "<group>"; };
@@ -71,6 +73,7 @@
 				51D4FA4827E4AFF5A2C26F25 /* Permissions.swift */,
 				63CC0E0339EC5E42E21D7B22 /* Shortcuts.swift */,
 				E2BF0AAAAD9B0FEEFC1A6E2A /* SnapEngine.swift */,
+				605AC61DB8196A2411E693E1 /* Theme.swift */,
 			);
 			path = Utilities;
 			sourceTree = "<group>";
@@ -246,6 +249,7 @@
 				8DD6AC6D1958BBFF53D72C32 /* SnapEngine.swift in Sources */,
 				EE302B57C617D2DCBA008376 /* SplashView.swift in Sources */,
 				EAD0F2FD584BEE789FC9C5A5 /* SplashWindowController.swift in Sources */,
+				853577C811B8BF02D6CC924E /* Theme.swift in Sources */,
 				AE23FAAB9483A0FC45C53C22 /* VideoLayerView.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;

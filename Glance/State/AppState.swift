@@ -73,6 +73,11 @@ final class AppState {
     /// it can be smaller than what the user dragged.
     var captureSize: CGSize = .zero
 
+    /// Title of the captured window, used to correlate it with an AXUIElement
+    /// when un-minimising. The Accessibility API exposes no CGWindowID, so the
+    /// title is the only public join key between the two APIs.
+    var sourceWindowTitle: String?
+
     /// The Unix PID of the application that owns the captured region.
     /// Used to implement "click PiP → bring source app to front".
     var sourceAppPID: pid_t?
@@ -113,6 +118,7 @@ final class AppState {
         isGhostMode = false
         currentFrame = nil
         sourceAppPID = nil
+        sourceWindowTitle = nil
         errorMessage = nil
     }
 }

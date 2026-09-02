@@ -29,6 +29,14 @@ let canvasRatio: CGFloat = 824.0 / 1024.0
 /// plain rounded rectangle.
 let cornerRatio: CGFloat = 0.2237
 
+// MARK: - Palette
+//
+// Mirrors Glance/Utilities/Theme.swift. Kept as literals rather than imported
+// so this script stays runnable standalone with `swift Tools/make-icon.swift`.
+
+let accent  = (r: 0.059, g: 0.796, b: 0.961)   // #0FCBF5 electric cyan
+let accentD = (r: 0.039, g: 0.529, b: 0.769)   // #0A87C4
+
 // MARK: - Drawing
 
 func drawIcon(size: CGFloat, into context: CGContext) {
@@ -40,12 +48,15 @@ func drawIcon(size: CGFloat, into context: CGContext) {
     let s = size / 1024.0
     context.scaleBy(x: s, y: s)
 
+    let space = CGColorSpaceCreateDeviceRGB()
+    func rgba(_ r: Double, _ g: Double, _ b: Double, _ a: Double) -> CGColor {
+        CGColor(colorSpace: space, components: [r, g, b, a])!
+    }
+
     let tile = 1024 * canvasRatio
     let inset = (1024 - tile) / 2
     let tileRect = CGRect(x: inset, y: inset, width: tile, height: tile)
     let radius = tile * cornerRatio
-
-    // ── Tile: dark vertical gradient ────────────────────────────────────
     let tilePath = CGPath(
         roundedRect: tileRect,
         cornerWidth: radius,
@@ -53,127 +64,172 @@ func drawIcon(size: CGFloat, into context: CGContext) {
         transform: nil
     )
 
+    // ── Graphite tile ───────────────────────────────────────────────────
     context.saveGState()
     context.addPath(tilePath)
     context.clip()
 
-    let space = CGColorSpaceCreateDeviceRGB()
-    let gradient = CGGradient(
+    let body = CGGradient(
         colorsSpace: space,
-        colors: [
-            CGColor(colorSpace: space, components: [0.16, 0.17, 0.21, 1.0])!,
-            CGColor(colorSpace: space, components: [0.07, 0.07, 0.09, 1.0])!
-        ] as CFArray,
+        colors: [rgba(0.22, 0.23, 0.26, 1), rgba(0.09, 0.09, 0.11, 1)] as CFArray,
         locations: [0.0, 1.0]
     )!
     context.drawLinearGradient(
-        gradient,
+        body,
         start: CGPoint(x: tileRect.midX, y: tileRect.maxY),
         end: CGPoint(x: tileRect.midX, y: tileRect.minY),
         options: []
     )
 
-    // A soft top highlight keeps the tile from looking flat at large sizes.
-    let highlight = CGGradient(
+    // Specular sweep across the upper third, as if lit from above-left.
+    let specular = CGGradient(
         colorsSpace: space,
-        colors: [
-            CGColor(colorSpace: space, components: [1, 1, 1, 0.10])!,
-            CGColor(colorSpace: space, components: [1, 1, 1, 0.0])!
-        ] as CFArray,
-        locations: [0.0, 1.0]
+        colors: [rgba(1, 1, 1, 0.16), rgba(1, 1, 1, 0.02), rgba(1, 1, 1, 0)] as CFArray,
+        locations: [0.0, 0.45, 1.0]
     )!
     context.drawLinearGradient(
-        highlight,
-        start: CGPoint(x: tileRect.midX, y: tileRect.maxY),
+        specular,
+        start: CGPoint(x: tileRect.minX, y: tileRect.maxY),
         end: CGPoint(x: tileRect.midX, y: tileRect.midY),
         options: []
     )
+
+    // Accent bloom in the lower right, tying the tile to the palette.
+    let bloom = CGGradient(
+        colorsSpace: space,
+        colors: [rgba(accent.r, accent.g, accent.b, 0.20), rgba(accent.r, accent.g, accent.b, 0)] as CFArray,
+        locations: [0.0, 1.0]
+    )!
+    context.drawRadialGradient(
+        bloom,
+        startCenter: CGPoint(x: tileRect.maxX - tile * 0.12, y: tileRect.minY + tile * 0.12),
+        startRadius: 0,
+        endCenter: CGPoint(x: tileRect.maxX - tile * 0.12, y: tileRect.minY + tile * 0.12),
+        endRadius: tile * 0.62,
+        options: []
+    )
     context.restoreGState()
 
-    // Hairline rim, so the tile keeps an edge against a dark wallpaper.
+    // Rim light: brighter along the top edge, so the tile reads as a solid
+    // object rather than a flat sticker.
     context.saveGState()
     context.addPath(tilePath)
-    context.setStrokeColor(CGColor(colorSpace: space, components: [1, 1, 1, 0.14])!)
-    context.setLineWidth(1024 * 0.004)
+    context.setStrokeColor(rgba(1, 1, 1, 0.18))
+    context.setLineWidth(1024 * 0.0045)
     context.strokePath()
     context.restoreGState()
 
-    // ── Screen outline ──────────────────────────────────────────────────
-    let screenWidth = tile * 0.60
-    let screenHeight = screenWidth * 0.66
-    let screenRect = CGRect(
-        x: tileRect.midX - screenWidth / 2,
-        y: tileRect.midY - screenHeight / 2 + tile * 0.045,
-        width: screenWidth,
-        height: screenHeight
+    // ── Two overlapping glass panels ────────────────────────────────────
+    // Back panel: the "full screen". Front panel: the picture-in-picture,
+    // tucked into its lower-right corner and tinted with the accent.
+
+    let backW = tile * 0.62
+    let backH = backW * 0.64
+    let backRect = CGRect(
+        x: tileRect.midX - backW / 2 - tile * 0.045,
+        y: tileRect.midY - backH / 2 + tile * 0.070,
+        width: backW,
+        height: backH
     )
-    let screenRadius = screenWidth * 0.10
-    let stroke = tile * 0.052
+    let backRadius = backW * 0.11
 
-    context.saveGState()
-    context.addPath(CGPath(
-        roundedRect: screenRect.insetBy(dx: stroke / 2, dy: stroke / 2),
-        cornerWidth: screenRadius,
-        cornerHeight: screenRadius,
-        transform: nil
-    ))
-    context.setStrokeColor(CGColor(colorSpace: space, components: [0.93, 0.94, 0.97, 1.0])!)
-    context.setLineWidth(stroke)
-    context.setLineJoin(.round)
-    context.strokePath()
-    context.restoreGState()
-
-    // ── Picture-in-picture inset ────────────────────────────────────────
-    // Overlaps the screen's lower-right corner and is knocked out of the
-    // outline first, so the two shapes read as separate planes.
-    let pipWidth = screenWidth * 0.46
-    let pipHeight = pipWidth * 0.66
-    let pipRect = CGRect(
-        x: screenRect.maxX - pipWidth * 0.72,
-        y: screenRect.minY - pipHeight * 0.30,
-        width: pipWidth,
-        height: pipHeight
+    let frontW = backW * 0.52
+    let frontH = frontW * 0.64
+    let frontRect = CGRect(
+        x: backRect.maxX - frontW * 0.55,
+        y: backRect.minY - frontH * 0.42,
+        width: frontW,
+        height: frontH
     )
-    let pipRadius = pipWidth * 0.20
+    let frontRadius = frontW * 0.17
 
-    // Knockout gap: redraw the tile gradient through a slightly larger
-    // rounded rect so the outline appears to pass behind the inset.
-    let gap = stroke * 0.9
+    func panelPath(_ rect: CGRect, _ r: CGFloat) -> CGPath {
+        CGPath(roundedRect: rect, cornerWidth: r, cornerHeight: r, transform: nil)
+    }
+
+    // Back panel — frosted white glass.
     context.saveGState()
-    context.addPath(CGPath(
-        roundedRect: pipRect.insetBy(dx: -gap, dy: -gap),
-        cornerWidth: pipRadius + gap,
-        cornerHeight: pipRadius + gap,
-        transform: nil
-    ))
+    context.addPath(panelPath(backRect, backRadius))
     context.clip()
-    context.setFillColor(CGColor(colorSpace: space, components: [0.10, 0.10, 0.13, 1.0])!)
-    context.fill(tileRect)
+    let backFill = CGGradient(
+        colorsSpace: space,
+        colors: [rgba(1, 1, 1, 0.20), rgba(1, 1, 1, 0.07)] as CFArray,
+        locations: [0.0, 1.0]
+    )!
+    context.drawLinearGradient(
+        backFill,
+        start: CGPoint(x: backRect.minX, y: backRect.maxY),
+        end: CGPoint(x: backRect.maxX, y: backRect.minY),
+        options: []
+    )
     context.restoreGState()
 
-    // The inset itself, in the app's accent blue.
     context.saveGState()
-    context.addPath(CGPath(
-        roundedRect: pipRect,
-        cornerWidth: pipRadius,
-        cornerHeight: pipRadius,
-        transform: nil
-    ))
-    let accent = CGGradient(
+    context.addPath(panelPath(backRect, backRadius))
+    context.setStrokeColor(rgba(1, 1, 1, 0.68))
+    context.setLineWidth(tile * 0.017)
+    context.strokePath()
+    context.restoreGState()
+
+    // Knockout so the front panel reads as floating in front of the back one.
+    let gap = tile * 0.013
+    context.saveGState()
+    context.addPath(panelPath(frontRect.insetBy(dx: -gap, dy: -gap), frontRadius + gap))
+    context.clip()
+    context.setBlendMode(.clear)
+    context.fill(tileRect)
+    context.setBlendMode(.normal)
+    // Repaint the tile beneath the knockout.
+    context.addPath(panelPath(frontRect.insetBy(dx: -gap, dy: -gap), frontRadius + gap))
+    context.clip()
+    let under = CGGradient(
+        colorsSpace: space,
+        colors: [rgba(0.20, 0.21, 0.24, 1), rgba(0.12, 0.12, 0.14, 1)] as CFArray,
+        locations: [0.0, 1.0]
+    )!
+    context.drawLinearGradient(
+        under,
+        start: CGPoint(x: tileRect.midX, y: tileRect.maxY),
+        end: CGPoint(x: tileRect.midX, y: tileRect.minY),
+        options: []
+    )
+    context.restoreGState()
+
+    // Front panel — accent glass.
+    context.saveGState()
+    context.addPath(panelPath(frontRect, frontRadius))
+    context.clip()
+    let frontFill = CGGradient(
         colorsSpace: space,
         colors: [
-            CGColor(colorSpace: space, components: [0.36, 0.68, 1.00, 1.0])!,
-            CGColor(colorSpace: space, components: [0.16, 0.44, 0.95, 1.0])!
+            rgba(accent.r, accent.g, accent.b, 0.95),
+            rgba(accentD.r, accentD.g, accentD.b, 0.95)
         ] as CFArray,
         locations: [0.0, 1.0]
     )!
-    context.clip()
     context.drawLinearGradient(
-        accent,
-        start: CGPoint(x: pipRect.minX, y: pipRect.maxY),
-        end: CGPoint(x: pipRect.maxX, y: pipRect.minY),
+        frontFill,
+        start: CGPoint(x: frontRect.minX, y: frontRect.maxY),
+        end: CGPoint(x: frontRect.maxX, y: frontRect.minY),
         options: []
     )
+    // Glass highlight across the top half of the panel.
+    context.saveGState()
+    context.addPath(panelPath(
+        CGRect(x: frontRect.minX, y: frontRect.midY, width: frontRect.width, height: frontRect.height / 2),
+        frontRadius
+    ))
+    context.clip()
+    context.setFillColor(rgba(1, 1, 1, 0.18))
+    context.fill(frontRect)
+    context.restoreGState()
+    context.restoreGState()
+
+    context.saveGState()
+    context.addPath(panelPath(frontRect, frontRadius))
+    context.setStrokeColor(rgba(1, 1, 1, 0.85))
+    context.setLineWidth(tile * 0.011)
+    context.strokePath()
     context.restoreGState()
 }
 

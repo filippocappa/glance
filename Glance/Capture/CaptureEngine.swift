@@ -302,6 +302,7 @@ final class CaptureEngine: NSObject {
             appState.isPaused = false
             if case let .window(window, _) = target {
                 appState.sourceAppPID = window.owningApplication?.processID
+                appState.sourceWindowTitle = window.title
             }
         }
 

@@ -41,6 +41,8 @@ struct SplashView: View {
         .frame(width: 460, height: 600)
         .background(VisualEffectBlur(material: .hudWindow, blendingMode: .behindWindow))
         .preferredColorScheme(.dark)
+        // One tint for every button, toggle and recorder in the window.
+        .tint(Theme.accent)
         .onReceive(NotificationCenter.default.publisher(
             for: NSApplication.didBecomeActiveNotification
         )) { _ in
@@ -54,14 +56,7 @@ struct SplashView: View {
         VStack(spacing: 10) {
             Image(systemName: "pip.fill")
                 .font(.system(size: 44, weight: .light))
-                .foregroundStyle(
-                    LinearGradient(
-                        colors: [Color(red: 0.36, green: 0.68, blue: 1.0),
-                                 Color(red: 0.16, green: 0.44, blue: 0.95)],
-                        startPoint: .topLeading,
-                        endPoint: .bottomTrailing
-                    )
-                )
+                .foregroundStyle(Theme.accentGradient)
                 .padding(.top, 28)
 
             Text("Glance")
@@ -90,7 +85,9 @@ struct SplashView: View {
                 StatusDot(ok: hasScreenRecording)
                 Text(hasScreenRecording ? "Allowed" : "Not allowed")
                     .font(.system(size: 11, weight: .medium))
-                    .foregroundStyle(hasScreenRecording ? .green : .orange)
+                    .foregroundStyle(hasScreenRecording
+                                     ? AnyShapeStyle(Theme.accent)
+                                     : AnyShapeStyle(Color.orange))
 
                 Spacer()
 
@@ -195,7 +192,7 @@ private struct Card<Content: View>: View {
             HStack(spacing: 9) {
                 Image(systemName: icon)
                     .font(.system(size: 13, weight: .medium))
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(Theme.accent)
                     .frame(width: 18)
 
                 VStack(alignment: .leading, spacing: 2) {
@@ -217,7 +214,7 @@ private struct Card<Content: View>: View {
                 .fill(Color.white.opacity(0.06))
                 .overlay(
                     RoundedRectangle(cornerRadius: 10)
-                        .strokeBorder(Color.white.opacity(0.09), lineWidth: 1)
+                        .strokeBorder(Theme.accent.opacity(0.14), lineWidth: 1)
                 )
         )
     }

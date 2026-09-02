@@ -98,7 +98,7 @@ struct HoverControlsView: View {
                                   : "cursorarrow.slash")
                                 .font(.system(size: 14))
                                 .foregroundStyle(isGhostMode
-                                                 ? AnyShapeStyle(Color.accentColor)
+                                                 ? AnyShapeStyle(Theme.accent)
                                                  : AnyShapeStyle(.white.opacity(0.9)))
                                 .shadow(color: .black.opacity(0.5), radius: 2)
                         }
@@ -135,6 +135,10 @@ struct HoverControlsView: View {
                         // giving the controls bar a native macOS "HUD" appearance
                         VisualEffectBlur(material: .hudWindow, blendingMode: .withinWindow)
                             .clipShape(RoundedRectangle(cornerRadius: 8))
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 8)
+                                    .strokeBorder(Theme.accent.opacity(0.35), lineWidth: 1)
+                            )
                     )
                     .padding(8)
                     
@@ -177,8 +181,8 @@ struct GhostExitBadge: View {
                 .frame(width: 34, height: 34)
                 .background(
                     Circle()
-                        .fill(.black.opacity(0.55))
-                        .overlay(Circle().strokeBorder(.white.opacity(0.25), lineWidth: 1))
+                        .fill(.black.opacity(0.6))
+                        .overlay(Circle().strokeBorder(Theme.accent.opacity(0.9), lineWidth: 1.5))
                 )
         }
         .buttonStyle(.plain)

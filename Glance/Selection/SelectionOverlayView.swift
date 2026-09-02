@@ -119,20 +119,20 @@ class SelectionOverlayView: NSView {
             // A thin white stroke outlines the selection. We inset by 0.5pt
             // so the 1pt stroke sits entirely inside the selection bounds,
             // preventing sub-pixel bleed.
-            context.setStrokeColor(NSColor.white.cgColor)
-            context.setLineWidth(1.0)
-            context.stroke(rect.insetBy(dx: 0.5, dy: 0.5))
+            context.setStrokeColor(Theme.accentNSColor.cgColor)
+            context.setLineWidth(1.5)
+            context.stroke(rect.insetBy(dx: 0.75, dy: 0.75))
 
             // --- Subtle outer glow / shadow ---
             // A soft shadow around the selection edge provides depth and
             // helps separate it from the dimmed surroundings.
             context.setShadow(
                 offset: .zero,
-                blur: 8,
-                color: NSColor.black.withAlphaComponent(0.5).cgColor
+                blur: 10,
+                color: Theme.accentNSColor.withAlphaComponent(0.7).cgColor
             )
-            context.setStrokeColor(NSColor.white.withAlphaComponent(0.3).cgColor)
-            context.setLineWidth(0.5)
+            context.setStrokeColor(Theme.accentNSColor.withAlphaComponent(0.45).cgColor)
+            context.setLineWidth(0.75)
             context.stroke(rect)
             // Reset shadow state to avoid affecting subsequent drawing
             context.setShadow(offset: .zero, blur: 0)
@@ -155,8 +155,8 @@ class SelectionOverlayView: NSView {
     /// white tint so they're visible against the dimmed background but
     /// not visually distracting.
     private func drawCrosshair(at point: NSPoint, in context: CGContext) {
-        context.setStrokeColor(NSColor.white.withAlphaComponent(0.6).cgColor)
-        context.setLineWidth(0.5)
+        context.setStrokeColor(Theme.accentNSColor.withAlphaComponent(0.75).cgColor)
+        context.setLineWidth(0.75)
 
         // Vertical guide line (top to bottom of view)
         context.move(to: CGPoint(x: point.x, y: 0))
@@ -180,7 +180,7 @@ class SelectionOverlayView: NSView {
         let text = "\(Int(rect.width)) × \(Int(rect.height))"
         let attrs: [NSAttributedString.Key: Any] = [
             .font: NSFont.monospacedSystemFont(ofSize: 12, weight: .medium),
-            .foregroundColor: NSColor.white
+            .foregroundColor: Theme.accentNSColor
         ]
         let attrString = NSAttributedString(string: text, attributes: attrs)
         let textSize = attrString.size()

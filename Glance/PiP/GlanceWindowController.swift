@@ -103,7 +103,7 @@ struct HoverTracker: NSViewRepresentable {
 // ─────────────────────────────────────────────────────────────────────────────
 
 @MainActor
-final class GlanceWindowController {
+final class GlanceWindowController: NSObject, NSWindowDelegate {
 
     // MARK: - Properties
 
@@ -128,7 +128,11 @@ final class GlanceWindowController {
     private static let badgeInset: CGFloat = 6
 
     /// Opacity the panel fades to in Ghost Mode.
-    private static let ghostAlpha: CGFloat = 0.55
+    ///
+    /// Low enough that text and windows behind it stay readable. The accent
+    /// outline drawn by `PiPContentView` compensates, so the panel's bounds
+    /// remain findable at this opacity.
+    private static let ghostAlpha: CGFloat = 0.32
 
     // MARK: - Sizing
 
@@ -174,6 +178,53 @@ final class GlanceWindowController {
     init(appState: AppState, captureEngine: CaptureEngine) {
         self.appState = appState
         self.captureEngine = captureEngine
+        super.init()
+    }
+
+    // MARK: - NSWindowDelegate
+
+    /// Constrains every interactive resize to the capture's aspect ratio, the
+    /// minimum panel size, and the screen's visible frame — in that order.
+    ///
+    /// Returning an already-valid size is what keeps AppKit from having to
+    /// solve anything, so no layout re-entry can occur.
+    func windowWillResize(_ sender: NSWindow, to frameSize: NSSize) -> NSSize {
+        sanitizedSize(frameSize, on: sender.screen)
+    }
+
+    /// Clamp a proposed size to something AppKit can always satisfy.
+    ///
+    /// Every `setFrame` in this class goes through here. A non-finite or
+    /// non-positive dimension reaching AppKit is an immediate hard failure, and
+    /// a size larger than the screen fights the window server's own clamping.
+    func sanitizedSize(_ proposed: NSSize, on screen: NSScreen?) -> NSSize {
+        let capture = appState.captureSize
+        let ratio: CGFloat = (capture.width > 0 && capture.height > 0)
+            ? capture.width / capture.height
+            : 16.0 / 9.0
+
+        // Reject NaN/infinity outright rather than propagating it.
+        var width = proposed.width.isFinite ? proposed.width : Self.minPanelWidth
+        guard ratio.isFinite, ratio > 0 else {
+            return NSSize(width: Self.minPanelWidth, height: Self.minPanelHeight)
+        }
+
+        // Width is the driving dimension; height always follows from the ratio,
+        // so the panel can never drift off the capture's proportions.
+        width = max(width, Self.minPanelWidth)
+        width = max(width, Self.minPanelHeight * ratio)
+
+        if let visible = screen?.visibleFrame.size {
+            width = min(width, max(Self.minPanelWidth, visible.width - SnapEngine.margin * 2))
+            let maxWidthForHeight = max(Self.minPanelWidth, (visible.height - SnapEngine.margin * 2) * ratio)
+            width = min(width, maxWidthForHeight)
+        }
+
+        let height = width / ratio
+        guard width.isFinite, height.isFinite, width > 0, height > 0 else {
+            return NSSize(width: Self.minPanelWidth, height: Self.minPanelHeight)
+        }
+        return NSSize(width: width, height: height)
     }
 
     // MARK: - Show / Close
@@ -204,15 +255,16 @@ final class GlanceWindowController {
         panel.hidesOnDeactivate = false          // an LSUIElement app deactivates constantly
         panel.isReleasedWhenClosed = false
 
-        // Lock the panel to the aspect ratio of the captured region. AppKit then
-        // constrains every live corner/edge resize to that ratio, so the video
-        // always fills the panel exactly — no letterbox bars can appear, at any
-        // size the user drags to.
-        panel.contentAspectRatio = size
-        panel.contentMinSize = Self.clampToMinimum(
-            CGSize(width: Self.minPanelWidth, height: Self.minPanelWidth * size.height / max(size.width, 1)),
-            aspect: size
-        )
+        // The aspect ratio is enforced by `windowWillResize(_:to:)` below, NOT
+        // by `contentAspectRatio`.
+        //
+        // Setting `contentAspectRatio` alongside `contentMinSize` gives AppKit's
+        // resize solver two rules to reconcile, and reconciling them re-enters
+        // layout. Combined with `setFrame` being called synchronously from a
+        // SwiftUI `.onChange`, that recursion ran the stack out and killed the
+        // process with no exception and no crash report. Doing the arithmetic
+        // ourselves is deterministic and cannot recurse.
+        panel.delegate = self
 
         observeLiveResize(of: panel)
 
@@ -278,10 +330,48 @@ final class GlanceWindowController {
 
         Task { await captureEngine.stopCapture() }
 
+        panel?.delegate = nil
         panel?.orderOut(nil)
         panel = nil
 
         appState.reset()
+    }
+
+    // MARK: - Frame application
+
+    /// Guards against re-entering `setFrame` from within a layout pass.
+    private var isApplyingFrame = false
+
+    /// Applies a sanitised size to the panel, off the current SwiftUI update.
+    ///
+    /// The hop through `DispatchQueue.main.async` is the important part: calling
+    /// `setFrame` synchronously from a SwiftUI `.onChange` resizes the hosting
+    /// view mid-update, which schedules another update, which calls back in.
+    private func applySize(_ size: NSSize, animated: Bool) {
+        // The panel is re-read inside the async block; only its existence and
+        // the re-entry flag matter here.
+        guard panel != nil, !isApplyingFrame else { return }
+        isApplyingFrame = true
+
+        DispatchQueue.main.async { [weak self] in
+            guard let self, let panel = self.panel else { return }
+            defer { self.isApplyingFrame = false }
+
+            let safe = self.sanitizedSize(size, on: panel.screen ?? NSScreen.main)
+            guard safe.width > 0, safe.height > 0 else { return }
+
+            SnapEngine.cancelAnimation()
+            panel.setFrame(NSRect(origin: panel.frame.origin, size: safe), display: true)
+            self.appState.windowSize = safe
+
+            let screen = panel.screen ?? NSScreen.main ?? NSScreen.screens[0]
+            let target = SnapEngine.snapPosition(for: panel.frame, on: screen)
+            if animated {
+                SnapEngine.animateSpring(window: panel, to: target)
+            } else {
+                panel.setFrameOrigin(target)
+            }
+        }
     }
 
     // MARK: - Ghost Mode
@@ -389,7 +479,8 @@ final class GlanceWindowController {
                 self.appState.isResizing = false
                 self.appState.windowSize = panel.frame.size
 
-                // Snap only now that the mouse is up.
+                // Snap only now that the mouse is up. The size itself is
+                // already valid — windowWillResize sanitised every step of it.
                 let screen = panel.screen ?? NSScreen.main ?? NSScreen.screens[0]
                 SnapEngine.animateSpring(
                     window: panel,
@@ -450,35 +541,20 @@ final class GlanceWindowController {
     // MARK: - Resizing
 
     private func resizeWindow(toZoom zoom: CGFloat) {
-        guard let panel else { return }
-
         // Derive from the ACTUAL capture crop, so zoom can never drift the panel
         // off the stream's aspect ratio.
         let capture = appState.captureSize
-        guard capture.width > 0, capture.height > 0, zoom > 0 else {
+        guard capture.width > 0, capture.height > 0, zoom.isFinite, zoom > 0 else {
             Log.window.error("resizeWindow ignored — captureSize=\(NSStringFromSize(capture), privacy: .public) zoom=\(zoom, privacy: .public)")
             return
         }
 
-        let base = Self.initialPanelSize(for: capture)
-        let newSize = Self.clampToMinimum(
-            CGSize(width: base.width * zoom, height: base.height * zoom),
-            aspect: capture
-        )
-
         // Resizing the panel does NOT touch the stream. SCStream keeps capturing
         // at the source resolution and Core Animation rescales the IOSurface on
-        // the GPU; reconfiguring the stream per resize tick would tear down and
+        // the GPU; reconfiguring the stream per resize would tear down and
         // rebuild the capture pipeline dozens of times a second.
-        SnapEngine.cancelAnimation()
-        panel.setFrame(NSRect(origin: panel.frame.origin, size: newSize), display: true)
-        appState.windowSize = newSize
-
-        let screen = panel.screen ?? NSScreen.main ?? NSScreen.screens[0]
-        SnapEngine.animateSpring(
-            window: panel,
-            to: SnapEngine.snapPosition(for: panel.frame, on: screen)
-        )
+        let base = Self.initialPanelSize(for: capture)
+        applySize(NSSize(width: base.width * zoom, height: base.height * zoom), animated: true)
     }
 
     // MARK: - Source App Interaction
@@ -509,23 +585,76 @@ final class GlanceWindowController {
         }
         Log.window.info("Activated source app pid=\(pid, privacy: .public) -> \(activated, privacy: .public)")
 
-        raiseSourceWindowIfPermitted(pid: pid)
+        raiseSourceWindow(pid: pid)
     }
 
-    /// Raises the captured window itself via Accessibility, when permitted.
-    private func raiseSourceWindowIfPermitted(pid: pid_t) {
-        guard AXIsProcessTrusted() else {
-            Log.window.debug("Accessibility not granted — activated the app but could not raise its specific window")
+    /// De-miniaturises and raises the captured window via Accessibility.
+    ///
+    /// Activating the process alone does nothing for a window sitting in the
+    /// Dock — AppKit offers no public way to un-minimise another app's window,
+    /// so `kAXMinimizedAttribute` is the only route. That requires the
+    /// Accessibility permission, which we ask for here (and only here, on an
+    /// explicit user action) rather than at launch.
+    private func raiseSourceWindow(pid: pid_t) {
+        guard ensureAccessibilityPermission() else {
+            Log.window.info("Accessibility not granted — activated the app, but cannot un-minimise its window")
             return
         }
+
+        // An app hidden with Cmd-H needs unhiding before its windows respond.
+        NSRunningApplication(processIdentifier: pid)?.unhide()
 
         let axApp = AXUIElementCreateApplication(pid)
         var value: CFTypeRef?
         guard AXUIElementCopyAttributeValue(axApp, kAXWindowsAttribute as CFString, &value) == .success,
-              let windows = value as? [AXUIElement], let front = windows.first else { return }
+              let windows = value as? [AXUIElement], !windows.isEmpty else {
+            Log.window.debug("No accessible windows for pid \(pid, privacy: .public)")
+            return
+        }
 
-        AXUIElementPerformAction(front, kAXRaiseAction as CFString)
+        let target = matchTargetWindow(among: windows) ?? windows[0]
+
+        // Un-minimise first: a minimised window cannot be raised or focused.
+        var minimized: CFTypeRef?
+        if AXUIElementCopyAttributeValue(target, kAXMinimizedAttribute as CFString, &minimized) == .success,
+           (minimized as? Bool) == true {
+            AXUIElementSetAttributeValue(target, kAXMinimizedAttribute as CFString, kCFBooleanFalse)
+            Log.window.info("Un-minimised source window")
+        }
+
+        AXUIElementPerformAction(target, kAXRaiseAction as CFString)
+        AXUIElementSetAttributeValue(axApp, kAXMainAttribute as CFString, kCFBooleanTrue)
         AXUIElementSetAttributeValue(axApp, kAXFrontmostAttribute as CFString, kCFBooleanTrue)
+    }
+
+    /// Finds the AX element for the window Glance is actually capturing.
+    ///
+    /// The Accessibility API exposes no CGWindowID, so the recorded title is the
+    /// only public way to correlate the two. Falls back to the frontmost window
+    /// when the title is empty or ambiguous.
+    private func matchTargetWindow(among windows: [AXUIElement]) -> AXUIElement? {
+        guard let wanted = appState.sourceWindowTitle, !wanted.isEmpty else { return nil }
+        for window in windows {
+            var title: CFTypeRef?
+            guard AXUIElementCopyAttributeValue(window, kAXTitleAttribute as CFString, &title) == .success,
+                  let string = title as? String else { continue }
+            if string == wanted { return window }
+        }
+        return nil
+    }
+
+    /// Returns whether Accessibility is available, prompting once if not.
+    private func ensureAccessibilityPermission() -> Bool {
+        if AXIsProcessTrusted() { return true }
+
+        // Prompting is only appropriate because this runs from a deliberate
+        // button press. The system shows its own dialog and remembers the answer.
+        let options = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true] as CFDictionary
+        let trusted = AXIsProcessTrustedWithOptions(options)
+        if !trusted {
+            Log.window.info("Requested Accessibility permission for window raising")
+        }
+        return trusted
     }
 }
 
@@ -593,6 +722,16 @@ struct PiPContentView: View {
             }
             .background(Color.black)
             .clipShape(RoundedRectangle(cornerRadius: 12))
+            // In Ghost Mode the panel drops to ~32% opacity, so without an
+            // outline its edges vanish against busy content. The accent border
+            // keeps it findable and signals that clicks are passing through.
+            .overlay(
+                RoundedRectangle(cornerRadius: 12)
+                    .strokeBorder(
+                        appState.isGhostMode ? Theme.accent.opacity(0.95) : Color.clear,
+                        lineWidth: 2
+                    )
+            )
             .contentShape(Rectangle())
             .gesture(
                 DragGesture(minimumDistance: 2)

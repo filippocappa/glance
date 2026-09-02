@@ -181,10 +181,18 @@ struct GlanceApp: App {
             MenuBarView(coordinator: coordinator)
                 .onAppear { coordinator.refreshPermission() }
         } label: {
-            // Template rendering makes AppKit tint the glyph for the current
-            // menu-bar appearance, instead of drawing a fixed-colour image.
-            Image(systemName: "pip.fill")
-                .renderingMode(.template)
+            // Template rendering lets AppKit tint the glyph for the current
+            // menu-bar appearance. While a capture is live the icon switches to
+            // `.original` so it can carry the accent colour and signal at a
+            // glance that Glance is recording.
+            if coordinator.appState.isStreaming {
+                Image(systemName: "pip.fill")
+                    .renderingMode(.original)
+                    .foregroundStyle(Theme.accent)
+            } else {
+                Image(systemName: "pip")
+                    .renderingMode(.template)
+            }
         }
         .menuBarExtraStyle(.menu)
     }
