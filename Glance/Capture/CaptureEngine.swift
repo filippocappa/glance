@@ -246,12 +246,20 @@ final class CaptureEngine: NSObject {
         // surface.
         config.scalesToFit = false
 
-        // Output resolution in BACKING PIXELS: crop points x display scale. This
-        // pairing (points in, pixels out) keeps the capture pixel-exact with no
-        // rescale. SCK also requires even dimensions; an odd width silently
-        // produces a stream that never emits a frame.
-        config.width = Self.evenPixels(crop.width * scale)
-        config.height = Self.evenPixels(crop.height * scale)
+        // Output resolution in BACKING PIXELS: crop points x display scale,
+        // capped to what the PiP panel can actually show. SCK requires even
+        // dimensions; an odd width silently produces a stream that never emits
+        // a frame.
+        let output = Self.outputSize(for: crop, scale: scale)
+        config.width = output.width
+        config.height = output.height
+        if output.capped {
+            Log.capture.info("""
+                Output capped to \(output.width, privacy: .public)x\(output.height, privacy: .public) \
+                from native \(Int(crop.width * scale), privacy: .public)x\(Int(crop.height * scale), privacy: .public) \
+                — the panel cannot display more
+                """)
+        }
 
         guard config.width > 0, config.height > 0 else {
             Log.capture.error("Computed output size is empty (\(config.width)x\(config.height))")
@@ -260,7 +268,13 @@ final class CaptureEngine: NSObject {
 
         config.minimumFrameInterval = CMTime(value: 1, timescale: 60)
         config.pixelFormat = kCVPixelFormatType_32BGRA
-        config.colorSpaceName = CGColorSpace.sRGB
+        // `colorSpaceName` is deliberately left at its default.
+        //
+        // Forcing sRGB made the compositor colour-convert every frame on a
+        // wide-gamut display (every modern Mac panel is Display P3), for no
+        // benefit: the IOSurface carries its own colour space and Core Animation
+        // renders it correctly either way. The default is the display's own
+        // space, which is a straight copy.
         config.showsCursor = false
         config.capturesAudio = false
         config.queueDepth = 3
@@ -351,31 +365,35 @@ final class CaptureEngine: NSObject {
                     scale=\(filter.pointPixelScale, privacy: .public)
                     """)
 
-                // Map the selection into the filter's space by NORMALISED
-                // fraction of the window, not by a raw point offset.
+                // `sourceRect` is measured from the content rect's OWN origin —
+                // (0,0) is the top-left of the captured window, not a point in
+                // screen space.
                 //
-                // `sourceRect` is measured against `filter.contentRect`, which
-                // is not guaranteed to match `SCWindow.frame` — it can differ in
-                // origin and in size, because what SCK composites for a window
-                // includes the window's own shadow/padding region. Adding a
-                // point offset taken from the window frame therefore drifts by
-                // exactly that inset, which is the offset seen in Finder, whose
-                // shadow geometry differs from a plain content window's.
+                // `filter.contentRect` is reported in global coordinates (for a
+                // window at {{435,276},{1050,639}} it reads back identically),
+                // so adding `contentRect.origin` here re-applied the window's
+                // screen position and shifted the crop by exactly that amount.
+                // That was the Finder offset: 38pt for a window under the menu
+                // bar, (435,276) for a floating one.
                 //
-                // Fractions are invariant to both of those differences, so this
-                // maps identically for every application.
+                // The bug was invisible for display capture, where
+                // `contentRect.origin` is (0,0) and the two forms agree.
+                //
+                // Sizes are taken as fractions of the window so the mapping
+                // still holds if SCK ever reports a content rect that differs in
+                // size from the window frame.
                 let fx = (intersection.minX - windowFrame.minX) / windowFrame.width
                 let fy = (intersection.minY - windowFrame.minY) / windowFrame.height
                 let fw = intersection.width / windowFrame.width
                 let fh = intersection.height / windowFrame.height
 
                 var crop = CGRect(
-                    x: contentRect.minX + fx * contentRect.width,
-                    y: contentRect.minY + fy * contentRect.height,
+                    x: fx * contentRect.width,
+                    y: fy * contentRect.height,
                     width: fw * contentRect.width,
                     height: fh * contentRect.height
                 )
-                crop = crop.intersection(contentRect)
+                crop = crop.intersection(CGRect(origin: .zero, size: contentRect.size))
 
                 if !crop.isNull, crop.width >= 2, crop.height >= 2 {
                     Log.capture.info("""
@@ -489,8 +507,9 @@ final class CaptureEngine: NSObject {
 
         selectionRect = rect
         config.sourceRect = crop
-        config.width = Self.evenPixels(crop.width * pointPixelScale)
-        config.height = Self.evenPixels(crop.height * pointPixelScale)
+        let output = Self.outputSize(for: crop, scale: pointPixelScale)
+        config.width = output.width
+        config.height = output.height
 
         guard config.width > 0, config.height > 0 else { return }
 
@@ -530,6 +549,35 @@ final class CaptureEngine: NSObject {
         let bounds = CGRect(origin: .zero, size: frame.size)
         crop = crop.intersection(bounds)
         return crop.isNull ? .zero : crop
+    }
+
+    /// Longest output edge, in backing pixels.
+    ///
+    /// The PiP panel is at most `GlanceWindowController.maxInitialWidth` (400pt)
+    /// wide, and the largest zoom preset is 200%, so 400 x 2.0 x a 2x backing
+    /// scale = 1600px is the most the panel can ever actually display. Capturing
+    /// a 2498x1638 region at native resolution meant pushing 15.6 MB per frame —
+    /// ~874 MB/s at 56fps — across the XPC boundary purely to have Core
+    /// Animation scale it down again. SCK's own scaler is free (it runs in the
+    /// compositor, on the GPU), so the downscale is better done there.
+    ///
+    /// This only ever reduces; a region smaller than the ceiling is captured
+    /// pixel-for-pixel as before.
+    static let maxOutputEdge: CGFloat = 1600
+
+    /// Output size in backing pixels for a crop, capped to ``maxOutputEdge``
+    /// and rounded to the even dimensions SCK requires.
+    private static func outputSize(for crop: CGRect, scale: CGFloat) -> (width: Int, height: Int, capped: Bool) {
+        let nativeWidth = crop.width * scale
+        let nativeHeight = crop.height * scale
+        let longest = max(nativeWidth, nativeHeight)
+
+        let k = longest > maxOutputEdge ? maxOutputEdge / longest : 1
+        return (
+            evenPixels(nativeWidth * k),
+            evenPixels(nativeHeight * k),
+            k < 1
+        )
     }
 
     /// SCK requires even output dimensions.
