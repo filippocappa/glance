@@ -54,6 +54,22 @@ enum Theme {
         alpha: 1.0
     )
 
+    // MARK: Monochrome (onboarding)
+    //
+    // The splash deliberately stays achromatic: a solid white action pill, a
+    // diffuse silver glow, and neutral control tints. Colour is reserved for
+    // the parts of the app that sit over the user's own content — the selection
+    // overlay and the PiP chrome — where the cyan accent carries meaning.
+
+    /// Near-white, very slightly cool, for the primary action pill and glyph.
+    static let mono = Color(.sRGB, red: 0.95, green: 0.96, blue: 0.98)
+
+    /// Text colour on top of a solid `mono` fill.
+    static let onMono = Color(.sRGB, red: 0.06, green: 0.07, blue: 0.09)
+
+    /// Control tint inside the splash — silver rather than the cyan accent.
+    static let monoTint = Color(.sRGB, red: 0.86, green: 0.89, blue: 0.94)
+
     // MARK: Surfaces
     //
     // Vocabulary shared with Hum so the two apps read as one family: the same

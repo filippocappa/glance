@@ -27,7 +27,9 @@ struct SplashView: View {
     @State private var actionIn = false
     @State private var hoveredCard: Int?
 
-    private var accent: Color { Theme.accent }
+    /// The splash is achromatic — see Theme.mono. The cyan accent is reserved
+    /// for surfaces that sit over the user's own content.
+    private var accent: Color { Theme.mono }
 
     private static let spring = Animation.spring(response: 0.6, dampingFraction: 0.75)
     private static let cardSpring = Animation.spring(response: 0.55, dampingFraction: 0.8)
@@ -38,20 +40,20 @@ struct SplashView: View {
 
             VStack(spacing: 0) {
                 header
-                cards.padding(.top, 20)
-                Spacer(minLength: 12)
+                cards.padding(.top, 16)
+                Spacer(minLength: 10)
                 footer
             }
-            .padding(.horizontal, 32)
-            .padding(.top, 28)
-            .padding(.bottom, 24)
+            .padding(.horizontal, 28)
+            .padding(.top, 20)
+            .padding(.bottom, 18)
         }
         .frame(
             width: SplashWindowController.size.width,
             height: SplashWindowController.size.height
         )
         .preferredColorScheme(.dark)
-        .tint(accent)
+        .tint(Theme.monoTint)
         .onAppear(perform: runEntrance)
         .onReceive(NotificationCenter.default.publisher(
             for: NSApplication.didBecomeActiveNotification
@@ -70,11 +72,17 @@ struct SplashView: View {
             Color.black.opacity(Theme.scrim)
 
             // Ambient accent glow, settling in behind the glyph.
+            // Diffuse silver ambience rather than a saturated bloom: a wide,
+            // low-alpha falloff reads as light in the room, not a colour wash.
             RadialGradient(
-                colors: [accent.opacity(glowIn ? 0.22 : 0), .clear],
-                center: .init(x: 0.5, y: 0.28),
-                startRadius: 8,
-                endRadius: 380
+                colors: [
+                    accent.opacity(glowIn ? 0.13 : 0),
+                    accent.opacity(glowIn ? 0.05 : 0),
+                    .clear
+                ],
+                center: .init(x: 0.5, y: 0.26),
+                startRadius: 10,
+                endRadius: 340
             )
         }
         .ignoresSafeArea()
@@ -83,14 +91,14 @@ struct SplashView: View {
     // MARK: Header
 
     private var header: some View {
-        VStack(spacing: 8) {
-            PulsingGlyph(accent: accent, size: 26, glowRadius: 68)
-                .frame(height: 56)
+        VStack(spacing: 6) {
+            PulsingGlyph(accent: accent, size: 24, glowRadius: 60)
+                .frame(height: 44)
                 .scaleEffect(glowIn ? 1 : 0.8)
                 .opacity(glowIn ? 1 : 0)
 
             Text("Glance")
-                .font(.system(size: 30, weight: .semibold, design: .rounded))
+                .font(.system(size: 26, weight: .semibold, design: .rounded))
                 .tracking(0.5)
 
             Text("Universal Picture-in-Picture for macOS, built natively with Swift.")
@@ -115,7 +123,7 @@ struct SplashView: View {
                 if hasScreenRecording {
                     Text("Allowed")
                         .font(.caption.weight(.medium))
-                        .foregroundStyle(accent)
+                        .foregroundStyle(.secondary)
                 } else {
                     Button("Grant") {
                         // Shows the system consent dialog. If the user has
@@ -137,37 +145,45 @@ struct SplashView: View {
                     .toggleStyle(.switch)
                     .controlSize(.small)
                     .labelsHidden()
-                    .tint(accent)
+                    .tint(Theme.monoTint)
                     .accessibilityLabel("Launch at Login")
             }
 
-            card(index: 2, symbol: "command",
-                 title: "Global shortcuts",
-                 detail: "Capture from anywhere. Ghost Mode dims the panel and clicks through it.") {
-                EmptyView()
-            }
-
-            recorderRow(index: 3, label: "New capture", name: .newCapture)
-            recorderRow(index: 4, label: "Ghost Mode", name: .toggleGhostMode)
+            shortcutsCard(index: 2)
         }
     }
 
-    /// A shortcut row: label on the left, recorder pill on the right.
-    private func recorderRow(index: Int, label: String, name: KeyboardShortcuts.Name) -> some View {
-        HStack(spacing: 12) {
-            Spacer().frame(width: 22)
+    /// Both hotkeys in one card, split by internal hairlines.
+    ///
+    /// They were previously two free-standing rows, which read as unrelated
+    /// containers and cost two full card heights.
+    private func shortcutsCard(index: Int) -> some View {
+        VStack(spacing: 0) {
+            HStack(spacing: 12) {
+                Image(systemName: "command")
+                    .font(.system(size: 14))
+                    .foregroundStyle(accent)
+                    .frame(width: 22)
 
-            Text(label)
-                .font(.callout.weight(.medium))
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Global shortcuts")
+                        .font(.callout.weight(.medium))
+                    Text("Work from any app, even when Glance isn't focused.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                Spacer(minLength: 8)
+            }
+            .padding(.horizontal, 14)
+            .padding(.top, 10)
+            .padding(.bottom, 9)
 
-            Spacer(minLength: 8)
-
-            KeyboardShortcuts.Recorder(for: name)
-                .controlSize(.small)
-                .fixedSize()
+            Divider().overlay(Theme.cardStroke)
+            shortcutRow("New capture", .newCapture)
+            Divider().overlay(Theme.cardStroke).padding(.leading, 14)
+            shortcutRow("Ghost Mode", .toggleGhostMode)
         }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 8)
         .background(RoundedRectangle(cornerRadius: Theme.cardRadius, style: .continuous)
             .fill(hoveredCard == index ? Theme.cardFillHover : Theme.cardFill))
         .overlay(RoundedRectangle(cornerRadius: Theme.cardRadius, style: .continuous)
@@ -176,6 +192,20 @@ struct SplashView: View {
         .animation(.easeOut(duration: 0.15), value: hoveredCard)
         .opacity(cardsIn > index ? 1 : 0)
         .offset(y: cardsIn > index ? 0 : 20)
+    }
+
+    private func shortcutRow(_ label: String, _ name: KeyboardShortcuts.Name) -> some View {
+        HStack(spacing: 12) {
+            Text(label)
+                .font(.callout)
+                .foregroundStyle(.secondary)
+            Spacer(minLength: 8)
+            KeyboardShortcuts.Recorder(for: name)
+                .controlSize(.small)
+                .fixedSize()
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 7)
     }
 
     private func card(index: Int, symbol: String, title: String, detail: String?,
@@ -222,14 +252,14 @@ struct SplashView: View {
 
     // MARK: Entrance
 
-    /// 0.0 glow · 0.1 title · 0.2–0.6 cards · 0.7 action.
+    /// 0.0 glow · 0.1 title · 0.2–0.4 cards · 0.5 action.
     private func runEntrance() {
         withAnimation(Self.spring) { glowIn = true }
         withAnimation(Self.cardSpring.delay(0.1)) { titleIn = true }
-        for i in 1...5 {
+        for i in 1...3 {
             withAnimation(Self.cardSpring.delay(0.2 + Double(i - 1) * 0.1)) { cardsIn = i }
         }
-        withAnimation(Self.cardSpring.delay(0.7)) { actionIn = true }
+        withAnimation(Self.cardSpring.delay(0.5)) { actionIn = true }
     }
 }
 
@@ -249,7 +279,7 @@ struct PulsingGlyph: View {
     var body: some View {
         ZStack {
             RadialGradient(
-                colors: [accent.opacity(0.55), accent.opacity(0.0)],
+                colors: [accent.opacity(0.30), accent.opacity(0.0)],
                 center: .center,
                 startRadius: 0,
                 endRadius: glowRadius / 2
@@ -262,7 +292,7 @@ struct PulsingGlyph: View {
             Image(systemName: "pip.fill")
                 .font(.system(size: size, weight: .medium))
                 .foregroundStyle(accent)
-                .shadow(color: accent.opacity(0.6), radius: 12)
+                .shadow(color: accent.opacity(0.35), radius: 14)
         }
         .onAppear {
             withAnimation(.easeInOut(duration: 2.6).repeatForever(autoreverses: true)) {
@@ -285,13 +315,15 @@ private struct StartButton: View {
         Button(action: action) {
             Text("Start Glancing")
                 .font(.body.weight(.semibold))
-                .foregroundStyle(Color(red: 0.04, green: 0.06, blue: 0.08))
+                .foregroundStyle(Theme.onMono)
                 .frame(maxWidth: .infinity)
                 .frame(height: 44)
                 .background(
+                    // Solid white, with only a whisper of gradient so the
+                    // specular rim has something to sit against.
                     Capsule()
                         .fill(LinearGradient(
-                            colors: [accent.opacity(hovering ? 0.95 : 0.85), accent],
+                            colors: [.white, accent.opacity(hovering ? 1.0 : 0.93)],
                             startPoint: .top, endPoint: .bottom
                         ))
                         .overlay(
@@ -305,7 +337,7 @@ private struct StartButton: View {
                             )
                         )
                 )
-                .shadow(color: accent.opacity(hovering ? 0.45 : 0.22), radius: hovering ? 18 : 9, y: 3)
+                .shadow(color: .white.opacity(hovering ? 0.22 : 0.10), radius: hovering ? 16 : 8, y: 3)
                 .contentShape(Capsule())
         }
         .buttonStyle(.plain)

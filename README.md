@@ -28,7 +28,7 @@ whatever is now sitting in those coordinates.
 | | |
 |---|---|
 | **Region capture** | Drag any rectangle, on any display, in any app. |
-| **Window-relative tracking** | The crop is anchored to the source window and follows it when moved. Falls back to display capture for desktop selections. |
+| **Window-relative tracking** | While you drag, Glance highlights the window that owns >50% of the selection and anchors the crop to it, so the PiP follows that window when it moves. No majority owner means display capture, and no highlight. |
 | **Ghost Mode** | Dim the panel to 55% and let every click pass through to the app behind it. Toggle with `⌥G`. |
 | **Corner snapping** | Release near a corner and the panel springs to it with an analytically-solved spring (`response 0.3`, `damping 0.6`). Release anywhere else and it stays put. |
 | **Aspect-locked resize** | Drag any corner; the panel is constrained to the capture's exact ratio, so the video always fills it. |

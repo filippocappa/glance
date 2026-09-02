@@ -45,7 +45,7 @@ class SelectionOverlayView: NSView {
     /// ScreenCaptureKit's top-left, display-relative space happens in
     /// `CaptureEngine`, where the target `SCDisplay` is known — doing it here
     /// against the primary screen's height was wrong on any secondary display.
-    var onSelectionComplete: ((CGRect, NSScreen) -> Void)?
+    var onSelectionComplete: ((CGRect, NSScreen, WindowCandidate?) -> Void)?
 
     /// Called when the user cancels the selection via ESC or right-click.
     var onSelectionCancelled: (() -> Void)?
@@ -63,6 +63,16 @@ class SelectionOverlayView: NSView {
 
     /// True while the user is actively dragging to create a selection.
     private var isSelecting: Bool = false
+
+    /// On-screen window list, captured once at mouse-down. Windows do not move
+    /// during a selection drag, so re-querying per mouse-moved event would only
+    /// add a synchronous WindowServer round-trip to the hot path.
+    private var windowSnapshot: [(id: CGWindowID, cgFrame: CGRect)] = []
+
+    /// The window that currently owns more than half the selection, if any.
+    /// Drives the highlight, and is handed to the capture engine on mouse-up so
+    /// what was highlighted is exactly what gets captured.
+    private var candidate: WindowCandidate?
 
     // MARK: - Computed Properties
 
@@ -105,6 +115,28 @@ class SelectionOverlayView: NSView {
         // visually de-emphasize content outside the selection.
         context.setFillColor(NSColor.black.withAlphaComponent(0.3).cgColor)
         context.fill(bounds)
+
+        // --- Step 1b: Highlight the window that will be tracked ---
+        // Only drawn when a single window owns >50% of the selection, so its
+        // presence tells the user that capture will follow that window, and its
+        // absence that Glance is falling back to display capture.
+        if let target = candidateRectInView {
+            context.setStrokeColor(Theme.accentNSColor.withAlphaComponent(0.85).cgColor)
+            context.setLineWidth(2)
+            context.setLineDash(phase: 0, lengths: [6, 4])
+            let path = CGPath(
+                roundedRect: target.insetBy(dx: 1, dy: 1),
+                cornerWidth: 10, cornerHeight: 10, transform: nil
+            )
+            context.addPath(path)
+            context.strokePath()
+            context.setLineDash(phase: 0, lengths: [])
+
+            // Faint wash so the window reads as "chosen" rather than merely outlined.
+            context.setFillColor(Theme.accentNSColor.withAlphaComponent(0.06).cgColor)
+            context.addPath(path)
+            context.fillPath()
+        }
 
         // --- Step 2: Draw the selection rectangle (if active) ---
         if let rect = selectionRect, rect.width > 1, rect.height > 1 {
@@ -216,13 +248,34 @@ class SelectionOverlayView: NSView {
         selectionStart = point
         selectionEnd = point
         isSelecting = true
+        windowSnapshot = ScreenPicker.windowSnapshot()
+        candidate = nil
         needsDisplay = true
     }
 
     /// Updates the selection endpoint as the user drags, causing a redraw.
     override func mouseDragged(with event: NSEvent) {
         selectionEnd = convert(event.locationInWindow, from: nil)
+        updateCandidate()
         needsDisplay = true
+    }
+
+    /// Re-evaluates which window (if any) owns more than half the selection.
+    private func updateCandidate() {
+        guard let rect = selectionRect, let window = self.window else {
+            candidate = nil
+            return
+        }
+        candidate = ScreenPicker.bestCandidate(
+            for: window.convertToScreen(rect),
+            in: windowSnapshot
+        )
+    }
+
+    /// The candidate's frame in this view's coordinates, for drawing.
+    private var candidateRectInView: NSRect? {
+        guard let candidate, let window = self.window else { return nil }
+        return convert(window.convertFromScreen(candidate.cocoaFrame), from: nil)
     }
 
     /// Completes the selection on mouse-up if the rectangle is large enough.
@@ -234,6 +287,8 @@ class SelectionOverlayView: NSView {
     override func mouseUp(with event: NSEvent) {
         selectionEnd = convert(event.locationInWindow, from: nil)
         isSelecting = false
+
+        updateCandidate()
 
         guard let rect = selectionRect, rect.width > 10, rect.height > 10 else {
             // Selection too small — treat as a click, not a selection. Reset.
@@ -252,7 +307,7 @@ class SelectionOverlayView: NSView {
               let screen = window.screen ?? NSScreen.main else { return }
         let screenRect = window.convertToScreen(rect)
 
-        onSelectionComplete?(screenRect, screen)
+        onSelectionComplete?(screenRect, screen, candidate)
     }
 
     /// Tracks mouse movement for crosshair rendering when not dragging.

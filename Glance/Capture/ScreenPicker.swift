@@ -331,3 +331,104 @@ extension NSScreen {
         deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? CGDirectDisplayID
     }
 }
+
+
+// MARK: - Live Window Targeting
+
+/// A candidate capture target found under a selection rectangle.
+struct WindowCandidate: Equatable {
+    /// Core Graphics window number.
+    let windowID: CGWindowID
+    /// The window's frame in Cocoa global coordinates (bottom-left origin),
+    /// ready to be drawn by the selection overlay.
+    let cocoaFrame: CGRect
+    /// Fraction of the selection this window covers, 0...1.
+    let coverage: CGFloat
+}
+
+extension ScreenPicker {
+
+    /// Minimum share of the selection a single window must cover to be bound as
+    /// the capture target.
+    ///
+    /// At or below this, the selection is spread across several apps (or over
+    /// the desktop) and display capture is the honest choice.
+    static let windowCoverageThreshold: CGFloat = 0.5
+
+    /// Snapshot of the on-screen window list, in front-to-back order.
+    ///
+    /// Taken once at mouse-down: the list is stable for the duration of a
+    /// selection drag, and re-querying it on every mouse-moved event would put
+    /// a synchronous WindowServer round-trip in the middle of the drag.
+    static func windowSnapshot() -> [(id: CGWindowID, cgFrame: CGRect)] {
+        guard let list = CGWindowListCopyWindowInfo(
+            [.optionOnScreenOnly, .excludeDesktopElements],
+            kCGNullWindowID
+        ) as? [[String: Any]] else { return [] }
+
+        let ownPID = ProcessInfo.processInfo.processIdentifier
+
+        return list.compactMap { info in
+            guard let bounds = info[kCGWindowBounds as String] as? [String: CGFloat],
+                  let id = info[kCGWindowNumber as String] as? CGWindowID,
+                  let pid = info[kCGWindowOwnerPID as String] as? pid_t
+            else { return nil }
+
+            // Only ordinary application windows live on layer 0. The Dock, the
+            // menu bar, Control Center and screenshot overlays sit higher and
+            // span the whole screen, so without this they would match every
+            // selection.
+            let layer = info[kCGWindowLayer as String] as? Int ?? 0
+            guard layer == 0, pid != ownPID else { return nil }
+
+            let frame = CGRect(
+                x: bounds["X"] ?? 0, y: bounds["Y"] ?? 0,
+                width: bounds["Width"] ?? 0, height: bounds["Height"] ?? 0
+            )
+            guard frame.width > 30, frame.height > 30 else { return nil }
+            return (id, frame)
+        }
+    }
+
+    /// The window covering the largest share of `selection`, if that share
+    /// exceeds ``windowCoverageThreshold``.
+    ///
+    /// - Parameters:
+    ///   - selection: The drawn rectangle, in Cocoa global coordinates.
+    ///   - snapshot: A list from ``windowSnapshot()``.
+    /// - Returns: The winning candidate, or `nil` when no single window owns
+    ///   enough of the selection.
+    static func bestCandidate(
+        for selection: CGRect,
+        in snapshot: [(id: CGWindowID, cgFrame: CGRect)]
+    ) -> WindowCandidate? {
+        let area = selection.width * selection.height
+        guard area > 0 else { return nil }
+
+        // Core Graphics frames are top-left origin; the selection is bottom-left.
+        guard let primary = NSScreen.screens.first else { return nil }
+        let flip = primary.frame.maxY
+
+        var best: WindowCandidate?
+        for window in snapshot {
+            let cocoa = CGRect(
+                x: window.cgFrame.minX,
+                y: flip - window.cgFrame.maxY,
+                width: window.cgFrame.width,
+                height: window.cgFrame.height
+            )
+            let overlap = cocoa.intersection(selection)
+            guard !overlap.isNull else { continue }
+
+            let coverage = (overlap.width * overlap.height) / area
+            if coverage > (best?.coverage ?? 0) {
+                best = WindowCandidate(windowID: window.id, cocoaFrame: cocoa, coverage: coverage)
+            }
+        }
+
+        // The list is front-to-back, so ties favour the frontmost window, which
+        // is the one the user can actually see.
+        guard let best, best.coverage > windowCoverageThreshold else { return nil }
+        return best
+    }
+}

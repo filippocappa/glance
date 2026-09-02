@@ -678,7 +678,15 @@ struct PiPContentView: View {
     var onHoverExited: () -> Void
     var onToggleGhostMode: () -> Void
 
-    @State private var initialWindowOrigin: CGPoint? = nil
+    /// Window origin and cursor position recorded at the start of a drag.
+    ///
+    /// The cursor is tracked in SCREEN coordinates via `NSEvent.mouseLocation`,
+    /// not through `DragGesture.translation`. The gesture lives inside the very
+    /// window being moved, so each `setFrameOrigin` shifts the gesture's own
+    /// coordinate space and the next translation is measured against a moved
+    /// reference — a feedback loop that showed up as jitter during the drag.
+    /// Screen coordinates are an absolute frame that the window cannot perturb.
+    @State private var dragAnchor: (windowOrigin: CGPoint, mouse: CGPoint)? = nil
 
     /// Width of the border band reserved for AppKit's live-resize handles.
     ///
@@ -745,29 +753,31 @@ struct PiPContentView: View {
                               !isInResizeBand(value.startLocation, in: geometry.size)
                         else { return }
 
-                        if initialWindowOrigin == nil {
-                            initialWindowOrigin = window.frame.origin
+                        if dragAnchor == nil {
+                            dragAnchor = (window.frame.origin, NSEvent.mouseLocation)
                             appState.isDragging = true
                             // A snap still settling would otherwise keep writing
                             // the origin underneath the drag.
                             SnapEngine.cancelAnimation()
                         }
-                        guard let startOrigin = initialWindowOrigin else { return }
-                        // SwiftUI translation is top-down; AppKit origins are bottom-up.
+                        guard let anchor = dragAnchor else { return }
+
+                        // Pure 1:1 cursor tracking. No snapping, no clamping and
+                        // no animation runs while the mouse is down — the window
+                        // simply follows the delta.
+                        let mouse = NSEvent.mouseLocation
                         window.setFrameOrigin(CGPoint(
-                            x: startOrigin.x + value.translation.width,
-                            y: startOrigin.y - value.translation.height
+                            x: anchor.windowOrigin.x + (mouse.x - anchor.mouse.x),
+                            y: anchor.windowOrigin.y + (mouse.y - anchor.mouse.y)
                         ))
                     }
                     .onEnded { _ in
-                        guard initialWindowOrigin != nil else { return }
-                        initialWindowOrigin = nil
+                        guard dragAnchor != nil else { return }
+                        dragAnchor = nil
                         appState.isDragging = false
 
-                        // Snap only when released within SnapEngine.snapThreshold
-                        // of a corner. Anywhere else the panel stays exactly
-                        // where it was dropped — it used to spring back to a
-                        // corner from any distance, which made it feel glued.
+                        // Everything positional happens here, on mouse-up: pick
+                        // the corner (if any) and settle with one spring.
                         let screen = window.screen ?? NSScreen.main ?? NSScreen.screens[0]
                         if let target = SnapEngine.snapPosition(for: window.frame, on: screen) {
                             SnapEngine.animateSpring(window: window, to: target)

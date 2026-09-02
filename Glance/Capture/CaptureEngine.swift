@@ -322,21 +322,17 @@ final class CaptureEngine: NSObject {
 
     /// Chooses between window-relative and display capture for a selection.
     private func resolveTarget(for selection: Selection) async throws -> CaptureTarget {
-        // Window geometry from ScreenCaptureKit and Core Graphics is top-left
-        // origin; the selection arrives bottom-left. Convert once, here.
-        let cgRect = Self.cgGlobalRect(from: selection.rect)
+        // The selection overlay already decided, and showed the user its
+        // decision as a highlight. Honour that exact window rather than
+        // re-running the hit test here, where a window that moved in the
+        // meantime could silently produce a different answer.
+        if let candidate = selection.target,
+           let window = try? await windowForID(candidate.windowID) {
 
-        if let window = try? await ScreenPicker.window(at: CGPoint(x: cgRect.midX, y: cgRect.midY)) {
-            let windowFrame = window.frame
-            let intersection = cgRect.intersection(windowFrame)
+            let cgRect = Self.cgGlobalRect(from: selection.rect)
+            let intersection = cgRect.intersection(window.frame)
 
-            // Require the window to cover essentially all of the selection. A
-            // selection that straddles two apps, or spills onto the desktop, is
-            // better served by display capture than by silently cropping.
-            let selectionArea = cgRect.width * cgRect.height
-            let covered = intersection.isNull ? 0 : (intersection.width * intersection.height)
-
-            if selectionArea > 0, covered / selectionArea >= 0.9 {
+            if !intersection.isNull, intersection.width >= 2, intersection.height >= 2 {
                 let filter = SCContentFilter(desktopIndependentWindow: window)
                 let contentRect = filter.contentRect
 
@@ -344,21 +340,19 @@ final class CaptureEngine: NSObject {
                 // rect — the space `sourceRect` is measured in, which is NOT
                 // the window's global frame.
                 var crop = CGRect(
-                    x: contentRect.minX + (intersection.minX - windowFrame.minX),
-                    y: contentRect.minY + (intersection.minY - windowFrame.minY),
+                    x: contentRect.minX + (intersection.minX - window.frame.minX),
+                    y: contentRect.minY + (intersection.minY - window.frame.minY),
                     width: intersection.width,
                     height: intersection.height
                 )
                 crop = crop.intersection(contentRect)
 
                 if !crop.isNull, crop.width >= 2, crop.height >= 2 {
+                    Log.capture.info("Binding highlighted window \(candidate.windowID, privacy: .public) (coverage \(Int(candidate.coverage * 100), privacy: .public)%)")
                     return .window(window, crop: crop)
                 }
-                Log.capture.debug("Window crop degenerate — falling back to display capture")
-            } else {
-                let pct = Int((covered / max(selectionArea, 1)) * 100)
-                Log.capture.debug("Selection only \(pct, privacy: .public)% inside the window — using display capture")
             }
+            Log.capture.debug("Highlighted window no longer usable — falling back to display capture")
         }
 
         guard let display = try await ScreenPicker.display(for: selection.screen) else {
@@ -366,6 +360,15 @@ final class CaptureEngine: NSObject {
             throw CaptureError.noTarget
         }
         return .display(display, crop: Self.sourceRect(forSelection: selection.rect, on: selection.screen))
+    }
+
+    /// Looks up the `SCWindow` matching a Core Graphics window number.
+    private func windowForID(_ id: CGWindowID) async throws -> SCWindow? {
+        let content = try await SCShareableContent.excludingDesktopWindows(
+            false,
+            onScreenWindowsOnly: true
+        )
+        return content.windows.first { $0.windowID == id }
     }
 
     /// Converts a Cocoa global rect (bottom-left origin, primary display) into

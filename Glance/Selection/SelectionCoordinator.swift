@@ -142,8 +142,12 @@ final class SelectionCoordinator {
 
         // Wire up the overlay's callbacks to this coordinator's
         // finish/cancel methods. Weak self prevents retain cycles.
-        overlayView.onSelectionComplete = { [weak self] rect, selectedScreen in
-            self?.finishSelection(with: Selection(rect: rect, screen: selectedScreen))
+        overlayView.onSelectionComplete = { [weak self] rect, selectedScreen, candidate in
+            self?.finishSelection(with: Selection(
+                rect: rect,
+                screen: selectedScreen,
+                target: candidate
+            ))
         }
         overlayView.onSelectionCancelled = { [weak self] in
             self?.cancelSelection()
@@ -212,4 +216,10 @@ final class SelectionCoordinator {
 struct Selection {
     let rect: CGRect
     let screen: NSScreen
+
+    /// The window the overlay highlighted, if one owned more than half the
+    /// selection. Carrying it here rather than re-deriving it in CaptureEngine
+    /// is what guarantees the highlight and the capture agree: the user is
+    /// shown a decision, and that same decision is what gets bound.
+    let target: WindowCandidate?
 }

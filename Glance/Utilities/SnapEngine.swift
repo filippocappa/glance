@@ -28,6 +28,7 @@
 //   SnapEngine.animateSnap(window: window, to: target)
 
 import AppKit
+import QuartzCore
 
 // MARK: - SnapEngine
 
@@ -200,51 +201,80 @@ enum SnapEngine {
         }
     }
 
-    private static var activeTimer: Timer?
+    /// Drives the settle animation, retained so it can be cancelled.
+    private static var settleLink: CADisplayLink?
+    private static var settleTick: ((CADisplayLink) -> Void)?
 
     /// Stops any in-flight snap animation.
     ///
-    /// The spring drives `setFrameOrigin` from a 120 Hz timer. If the user grabs
-    /// a corner while that timer is still alive, AppKit's live resize and the
-    /// timer both write the window frame every few milliseconds and the window
-    /// visibly judders. Every interactive gesture cancels the spring first.
+    /// The spring writes `setFrameOrigin` every frame. If the user grabs the
+    /// window while that is still running, the animation and the drag both write
+    /// the origin and the window visibly judders. Every interactive gesture
+    /// cancels the spring first.
     static func cancelAnimation() {
-        activeTimer?.invalidate()
-        activeTimer = nil
+        settleLink?.invalidate()
+        settleLink = nil
+        settleTick = nil
     }
 
-    /// Animates the window frame origin using a mathematically exact spring simulation.
-    /// Uses response: 0.3, dampingFraction: 0.6.
+    /// Settles the window to `targetOrigin` with one analytically-solved spring.
+    ///
+    /// Driven by `CADisplayLink` rather than a `Timer`. A 120 Hz timer is not
+    /// aligned to the display's refresh, so frames land at arbitrary phases
+    /// relative to vsync and the motion stutters even though the maths is
+    /// smooth. A display link fires once per frame, in step with the compositor.
     static func animateSpring(window: NSWindow, to targetOrigin: CGPoint) {
         cancelAnimation()
 
         let startOrigin = window.frame.origin
-        let x0 = Double(startOrigin.x - targetOrigin.x)
-        let y0 = Double(startOrigin.y - targetOrigin.y)
+        let dx = Double(startOrigin.x - targetOrigin.x)
+        let dy = Double(startOrigin.y - targetOrigin.y)
 
-        let spring = AnalyticalSpring(response: 0.3, dampingFraction: 0.6)
-        let startTime = Date()
-
-        let timer = Timer(timeInterval: 1.0 / 120.0, repeats: true) { timer in
-            let elapsed = Date().timeIntervalSince(startTime)
-
-            let solX = spring.solve(t: elapsed, x0: x0, v0: 0.0)
-            let solY = spring.solve(t: elapsed, x0: y0, v0: 0.0)
-
-            let currentX = targetOrigin.x + CGFloat(solX.x)
-            let currentY = targetOrigin.y + CGFloat(solY.x)
-
-            window.setFrameOrigin(CGPoint(x: currentX, y: currentY))
-
-            // The settling duration for response=0.3, dampingFraction=0.6 is about 0.6s
-            if elapsed >= 0.8 || (abs(solX.x) < 0.1 && abs(solY.x) < 0.1) {
-                window.setFrameOrigin(targetOrigin)
-                timer.invalidate()
-            }
+        // Already there — nothing to animate.
+        guard abs(dx) > 0.5 || abs(dy) > 0.5 else {
+            window.setFrameOrigin(targetOrigin)
+            return
         }
 
-        activeTimer = timer
-        RunLoop.main.add(timer, forMode: .common)
+        let spring = AnalyticalSpring(response: 0.3, dampingFraction: 0.6)
+        let start = CACurrentMediaTime()
+
+        let tick: (CADisplayLink) -> Void = { link in
+            let elapsed = CACurrentMediaTime() - start
+            let x = spring.solve(t: elapsed, x0: dx, v0: 0)
+            let y = spring.solve(t: elapsed, x0: dy, v0: 0)
+
+            window.setFrameOrigin(CGPoint(
+                x: targetOrigin.x + CGFloat(x.x),
+                y: targetOrigin.y + CGFloat(y.x)
+            ))
+
+            // Settling time for response 0.3 / damping 0.6 is roughly 0.6s.
+            if elapsed >= 0.8 || (abs(x.x) < 0.1 && abs(y.x) < 0.1) {
+                window.setFrameOrigin(targetOrigin)
+                cancelAnimation()
+            }
+        }
+        settleTick = tick
+
+        // NSView.displayLink(target:selector:) is macOS 14+, and the panel's
+        // content view gives us the link for the display it is actually on.
+        guard let view = window.contentView else {
+            window.setFrameOrigin(targetOrigin)
+            return
+        }
+        let link = view.displayLink(target: SpringProxy.shared, selector: #selector(SpringProxy.step(_:)))
+        settleLink = link
+        link.add(to: .main, forMode: .common)
+    }
+
+    /// Objective-C target for the display link. `CADisplayLink` needs a real
+    /// selector target, which a static closure cannot provide.
+    private final class SpringProxy: NSObject {
+        static let shared = SpringProxy()
+        @objc func step(_ link: CADisplayLink) {
+            SnapEngine.settleTick?(link)
+        }
     }
 
     /// Convenience that finds the nearest anchor *and* animates in one call.

@@ -24,7 +24,7 @@ final class SplashWindowController {
     }
 
     /// Window size, shared with SplashView so the layout and the frame agree.
-    static let size = NSSize(width: 520, height: 560)
+    static let size = NSSize(width: 500, height: 452)
 
     private var window: NSWindow?
 
