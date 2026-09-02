@@ -8,8 +8,11 @@
 
 /* Begin PBXBuildFile section */
 		10A0711863448CECE203DD05 /* SelectionOverlayView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5A9A4E964DE5D0DDE115FE9B /* SelectionOverlayView.swift */; };
+		1AC651BEDA12FFE3BF345F98 /* Shortcuts.swift in Sources */ = {isa = PBXBuildFile; fileRef = 63CC0E0339EC5E42E21D7B22 /* Shortcuts.swift */; };
 		20FCD627E33FC123274361BB /* HoverControlsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2AF5E0F5CB75CC013AE39189 /* HoverControlsView.swift */; };
+		2986F748EE80F44E654BE25C /* Log.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5E4297650E52E1C6A9F854E7 /* Log.swift */; };
 		3675F9B4983E62AF5CF153CA /* PausedOverlayView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0AE75BEE7799240281835F6D /* PausedOverlayView.swift */; };
+		508804CD84F27A12CF0C0AA0 /* LaunchAtLogin in Frameworks */ = {isa = PBXBuildFile; productRef = 2EBE2959AAADF9D468607032 /* LaunchAtLogin */; };
 		551A07477CC4D773FA2F32AC /* Permissions.swift in Sources */ = {isa = PBXBuildFile; fileRef = 51D4FA4827E4AFF5A2C26F25 /* Permissions.swift */; };
 		5DAB0CAACDF82305FDAB157D /* SelectionCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9ADD14384D3DAF9A5756F764 /* SelectionCoordinator.swift */; };
 		65C6D168B5A231F77EBE069D /* ScreenPicker.swift in Sources */ = {isa = PBXBuildFile; fileRef = 79AE5C7305B25F64C60CB89E /* ScreenPicker.swift */; };
@@ -17,8 +20,11 @@
 		8DD6AC6D1958BBFF53D72C32 /* SnapEngine.swift in Sources */ = {isa = PBXBuildFile; fileRef = E2BF0AAAAD9B0FEEFC1A6E2A /* SnapEngine.swift */; };
 		AC925F48D9DCBBE0DC2BA176 /* GlanceApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = DABC3538525DB0E0FB7C5869 /* GlanceApp.swift */; };
 		AE23FAAB9483A0FC45C53C22 /* VideoLayerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B86F1AD36DA7893B03F04067 /* VideoLayerView.swift */; };
+		B7D0536BB572326DAE8768C3 /* KeyboardShortcuts in Frameworks */ = {isa = PBXBuildFile; productRef = 63DB1CC77754F7B877AF6BBD /* KeyboardShortcuts */; };
 		DAE86650DA886C30DCF9F16B /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 1BCDB43CF7CD7BA504C6B993 /* Assets.xcassets */; };
 		E89660DF9D0D86FAD467D87A /* AppState.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2D783B12B35B9DE6E2093232 /* AppState.swift */; };
+		EAD0F2FD584BEE789FC9C5A5 /* SplashWindowController.swift in Sources */ = {isa = PBXBuildFile; fileRef = A031172E465E22B7EEC977E2 /* SplashWindowController.swift */; };
+		EE302B57C617D2DCBA008376 /* SplashView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 301ED5D88F993653B2D71CE0 /* SplashView.swift */; };
 		EFFDE9E0617C5D8301E5071F /* CaptureEngine.swift in Sources */ = {isa = PBXBuildFile; fileRef = 474DCBF2DF1303793F4B7DAE /* CaptureEngine.swift */; };
 /* End PBXBuildFile section */
 
@@ -28,24 +34,42 @@
 		214C15C8747C87DCE505F8EE /* Glance.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = Glance.entitlements; sourceTree = "<group>"; };
 		2AF5E0F5CB75CC013AE39189 /* HoverControlsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HoverControlsView.swift; sourceTree = "<group>"; };
 		2D783B12B35B9DE6E2093232 /* AppState.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppState.swift; sourceTree = "<group>"; };
+		301ED5D88F993653B2D71CE0 /* SplashView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SplashView.swift; sourceTree = "<group>"; };
 		3B09D51F3B7FDA07B7E2C4FC /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
 		474DCBF2DF1303793F4B7DAE /* CaptureEngine.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CaptureEngine.swift; sourceTree = "<group>"; };
 		51D4FA4827E4AFF5A2C26F25 /* Permissions.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Permissions.swift; sourceTree = "<group>"; };
 		5A9A4E964DE5D0DDE115FE9B /* SelectionOverlayView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SelectionOverlayView.swift; sourceTree = "<group>"; };
+		5E4297650E52E1C6A9F854E7 /* Log.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Log.swift; sourceTree = "<group>"; };
+		63CC0E0339EC5E42E21D7B22 /* Shortcuts.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Shortcuts.swift; sourceTree = "<group>"; };
 		714395DCA90EA00A0F6952BA /* GlanceWindowController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GlanceWindowController.swift; sourceTree = "<group>"; };
 		79AE5C7305B25F64C60CB89E /* ScreenPicker.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScreenPicker.swift; sourceTree = "<group>"; };
 		9ADD14384D3DAF9A5756F764 /* SelectionCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SelectionCoordinator.swift; sourceTree = "<group>"; };
+		A031172E465E22B7EEC977E2 /* SplashWindowController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SplashWindowController.swift; sourceTree = "<group>"; };
 		B86F1AD36DA7893B03F04067 /* VideoLayerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VideoLayerView.swift; sourceTree = "<group>"; };
 		DABC3538525DB0E0FB7C5869 /* GlanceApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GlanceApp.swift; sourceTree = "<group>"; };
 		E2BF0AAAAD9B0FEEFC1A6E2A /* SnapEngine.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SnapEngine.swift; sourceTree = "<group>"; };
 		E6681C13BACBBD0D74A80EB4 /* Glance.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Glance.app; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
+/* Begin PBXFrameworksBuildPhase section */
+		F1692AA5A14C8B9B17915D27 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				508804CD84F27A12CF0C0AA0 /* LaunchAtLogin in Frameworks */,
+				B7D0536BB572326DAE8768C3 /* KeyboardShortcuts in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
+
 /* Begin PBXGroup section */
 		0F2B39577602CC0F99C06674 /* Utilities */ = {
 			isa = PBXGroup;
 			children = (
+				5E4297650E52E1C6A9F854E7 /* Log.swift */,
 				51D4FA4827E4AFF5A2C26F25 /* Permissions.swift */,
+				63CC0E0339EC5E42E21D7B22 /* Shortcuts.swift */,
 				E2BF0AAAAD9B0FEEFC1A6E2A /* SnapEngine.swift */,
 			);
 			path = Utilities;
@@ -84,6 +108,15 @@
 			name = Products;
 			sourceTree = "<group>";
 		};
+		D7A655CD45458C7FAEACA617 /* Onboarding */ = {
+			isa = PBXGroup;
+			children = (
+				301ED5D88F993653B2D71CE0 /* SplashView.swift */,
+				A031172E465E22B7EEC977E2 /* SplashWindowController.swift */,
+			);
+			path = Onboarding;
+			sourceTree = "<group>";
+		};
 		E0293FA58A46BE481F90B867 /* Selection */ = {
 			isa = PBXGroup;
 			children = (
@@ -101,6 +134,7 @@
 				DABC3538525DB0E0FB7C5869 /* GlanceApp.swift */,
 				3B09D51F3B7FDA07B7E2C4FC /* Info.plist */,
 				13F11D50B421204E466606BC /* Capture */,
+				D7A655CD45458C7FAEACA617 /* Onboarding */,
 				FDCD60BD729DAE186E09D8A0 /* PiP */,
 				E0293FA58A46BE481F90B867 /* Selection */,
 				737B598EE551FE8E4CF617C7 /* State */,
@@ -129,7 +163,7 @@
 			buildPhases = (
 				32DD4C8A891B8A91C685238C /* Sources */,
 				A3C361D35F468850BEF053AB /* Resources */,
-				639DF09FF3E79EC129541D0A /* Consistently Code Sign App Bundle */,
+				F1692AA5A14C8B9B17915D27 /* Frameworks */,
 			);
 			buildRules = (
 			);
@@ -137,6 +171,8 @@
 			);
 			name = Glance;
 			packageProductDependencies = (
+				2EBE2959AAADF9D468607032 /* LaunchAtLogin */,
+				63DB1CC77754F7B877AF6BBD /* KeyboardShortcuts */,
 			);
 			productName = Glance;
 			productReference = E6681C13BACBBD0D74A80EB4 /* Glance.app */;
@@ -165,6 +201,10 @@
 			);
 			mainGroup = 1A7345DEDC89903C9907667A;
 			minimizedProjectReferenceProxies = 1;
+			packageReferences = (
+				44D239F1BA4DDED627865BCC /* XCRemoteSwiftPackageReference "KeyboardShortcuts" */,
+				33F257F58911B29210DA5211 /* XCRemoteSwiftPackageReference "LaunchAtLogin-Modern" */,
+			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = 897E7B5C0E3778F8AD681930 /* Products */;
 			projectDirPath = "";
@@ -186,27 +226,6 @@
 		};
 /* End PBXResourcesBuildPhase section */
 
-/* Begin PBXShellScriptBuildPhase section */
-		639DF09FF3E79EC129541D0A /* Consistently Code Sign App Bundle */ = {
-			isa = PBXShellScriptBuildPhase;
-			buildActionMask = 2147483647;
-			files = (
-			);
-			inputFileListPaths = (
-			);
-			inputPaths = (
-			);
-			name = "Consistently Code Sign App Bundle";
-			outputFileListPaths = (
-			);
-			outputPaths = (
-			);
-			runOnlyForDeploymentPostprocessing = 0;
-			shellPath = /bin/sh;
-			shellScript = "echo \"Ad-hoc signing app bundle at ${CODESIGNING_FOLDER_PATH}\"\ncodesign --force --deep --sign - --entitlements \"${SRCROOT}/Glance/Glance.entitlements\" \"${CODESIGNING_FOLDER_PATH}\"\n";
-		};
-/* End PBXShellScriptBuildPhase section */
-
 /* Begin PBXSourcesBuildPhase section */
 		32DD4C8A891B8A91C685238C /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
@@ -217,12 +236,16 @@
 				AC925F48D9DCBBE0DC2BA176 /* GlanceApp.swift in Sources */,
 				8BECC6DD8713E582F72DFCDF /* GlanceWindowController.swift in Sources */,
 				20FCD627E33FC123274361BB /* HoverControlsView.swift in Sources */,
+				2986F748EE80F44E654BE25C /* Log.swift in Sources */,
 				3675F9B4983E62AF5CF153CA /* PausedOverlayView.swift in Sources */,
 				551A07477CC4D773FA2F32AC /* Permissions.swift in Sources */,
 				65C6D168B5A231F77EBE069D /* ScreenPicker.swift in Sources */,
 				5DAB0CAACDF82305FDAB157D /* SelectionCoordinator.swift in Sources */,
 				10A0711863448CECE203DD05 /* SelectionOverlayView.swift in Sources */,
+				1AC651BEDA12FFE3BF345F98 /* Shortcuts.swift in Sources */,
 				8DD6AC6D1958BBFF53D72C32 /* SnapEngine.swift in Sources */,
+				EE302B57C617D2DCBA008376 /* SplashView.swift in Sources */,
+				EAD0F2FD584BEE789FC9C5A5 /* SplashWindowController.swift in Sources */,
 				AE23FAAB9483A0FC45C53C22 /* VideoLayerView.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -236,7 +259,8 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_ENTITLEMENTS = Glance/Glance.entitlements;
-				CODE_SIGN_IDENTITY = "-";
+				CODE_SIGN_IDENTITY = 4C62BBDC1767F52AB92F5E37E08C0877AA752ACF;
+				CODE_SIGN_INJECT_BASE_ENTITLEMENTS = NO;
 				CODE_SIGN_STYLE = Manual;
 				COMBINE_HIDPI_IMAGES = YES;
 				CURRENT_PROJECT_VERSION = 1;
@@ -248,8 +272,10 @@
 					"@executable_path/../Frameworks",
 				);
 				MARKETING_VERSION = 1.0;
+				OTHER_CODE_SIGN_FLAGS = "--timestamp=none";
 				PRODUCT_BUNDLE_IDENTIFIER = com.filippocappa.glance;
 				PRODUCT_NAME = Glance;
+				PROVISIONING_PROFILE_SPECIFIER = "";
 				SDKROOT = macosx;
 				SWIFT_EMIT_LOC_STRINGS = YES;
 			};
@@ -317,7 +343,8 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_ENTITLEMENTS = Glance/Glance.entitlements;
-				CODE_SIGN_IDENTITY = "-";
+				CODE_SIGN_IDENTITY = 4C62BBDC1767F52AB92F5E37E08C0877AA752ACF;
+				CODE_SIGN_INJECT_BASE_ENTITLEMENTS = NO;
 				CODE_SIGN_STYLE = Manual;
 				COMBINE_HIDPI_IMAGES = YES;
 				CURRENT_PROJECT_VERSION = 1;
@@ -329,8 +356,10 @@
 					"@executable_path/../Frameworks",
 				);
 				MARKETING_VERSION = 1.0;
+				OTHER_CODE_SIGN_FLAGS = "--timestamp=none";
 				PRODUCT_BUNDLE_IDENTIFIER = com.filippocappa.glance;
 				PRODUCT_NAME = Glance;
+				PROVISIONING_PROFILE_SPECIFIER = "";
 				SDKROOT = macosx;
 				SWIFT_EMIT_LOC_STRINGS = YES;
 			};
@@ -421,6 +450,38 @@
 			defaultConfigurationName = Release;
 		};
 /* End XCConfigurationList section */
+
+/* Begin XCRemoteSwiftPackageReference section */
+		33F257F58911B29210DA5211 /* XCRemoteSwiftPackageReference "LaunchAtLogin-Modern" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/sindresorhus/LaunchAtLogin-Modern";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 1.1.0;
+			};
+		};
+		44D239F1BA4DDED627865BCC /* XCRemoteSwiftPackageReference "KeyboardShortcuts" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/sindresorhus/KeyboardShortcuts";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 2.2.0;
+			};
+		};
+/* End XCRemoteSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		2EBE2959AAADF9D468607032 /* LaunchAtLogin */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 33F257F58911B29210DA5211 /* XCRemoteSwiftPackageReference "LaunchAtLogin-Modern" */;
+			productName = LaunchAtLogin;
+		};
+		63DB1CC77754F7B877AF6BBD /* KeyboardShortcuts */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 44D239F1BA4DDED627865BCC /* XCRemoteSwiftPackageReference "KeyboardShortcuts" */;
+			productName = KeyboardShortcuts;
+		};
+/* End XCSwiftPackageProductDependency section */
 	};
 	rootObject = 070164DEC24115A8F4F2D9F7 /* Project object */;
 }

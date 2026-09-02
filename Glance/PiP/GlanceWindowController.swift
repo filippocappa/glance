@@ -1,271 +1,645 @@
+import ApplicationServices
 import AppKit
 import SwiftUI
-import Combine
+
+// MARK: - GlancePanel
+// ─────────────────────────────────────────────────────────────────────────────
+// A borderless, non-activating floating panel.
+//
+// `canBecomeKey` is required: without it a borderless panel never becomes key,
+// and AppKit will not route mouse-drag sequences into its content view — the
+// SwiftUI DragGesture would fire `onChanged` once and then go silent.
+// `.nonactivatingPanel` keeps Glance from stealing focus from the source app
+// when that happens.
+// ─────────────────────────────────────────────────────────────────────────────
+
+final class GlancePanel: NSPanel {
+    override var canBecomeKey: Bool { true }
+    override var canBecomeMain: Bool { false }
+}
+
+// MARK: - FirstMouseHostingView
+// ─────────────────────────────────────────────────────────────────────────────
+// Glance is an LSUIElement agent and is therefore never the active application.
+// Without `acceptsFirstMouse`, AppKit swallows the first click in a window
+// belonging to an inactive app — which meant the first drag attempt on the PiP
+// always did nothing.
+// ─────────────────────────────────────────────────────────────────────────────
+
+final class FirstMouseHostingView<Content: View>: NSHostingView<Content> {
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+
+    /// When non-nil, only points inside this rect (in view coordinates) are
+    /// hit-testable; everything else passes through.
+    ///
+    /// This is the second half of Ghost Mode. `ignoresMouseEvents` is a
+    /// *window* flag — with it set the window is handed no events at all, so a
+    /// hitTest override alone cannot keep a badge clickable. The controller
+    /// therefore briefly clears `ignoresMouseEvents` while the cursor is over
+    /// the badge, and this override makes sure that during those moments only
+    /// the badge can be hit, never the video underneath it.
+    var ghostHitRect: NSRect?
+
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        if let ghostHitRect, !ghostHitRect.contains(point) { return nil }
+        return super.hitTest(point)
+    }
+}
+
+// MARK: - HoverTrackingView
+// ─────────────────────────────────────────────────────────────────────────────
+// Reports mouse exit from the PiP window using an NSTrackingArea with
+// `.activeAlways`, which — unlike SwiftUI's `.onHover` — keeps firing while the
+// owning app is inactive.
+// ─────────────────────────────────────────────────────────────────────────────
+
+final class HoverTrackingView: NSView {
+    var onExited: (() -> Void)?
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        for area in trackingAreas { removeTrackingArea(area) }
+        addTrackingArea(NSTrackingArea(
+            rect: bounds,
+            options: [.mouseEnteredAndExited, .activeAlways, .inVisibleRect],
+            owner: self
+        ))
+    }
+
+    override func mouseExited(with event: NSEvent) { onExited?() }
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }  // tracking only, never steals clicks
+}
+
+struct HoverTracker: NSViewRepresentable {
+    var onExited: () -> Void
+
+    func makeNSView(context: Context) -> HoverTrackingView {
+        let view = HoverTrackingView()
+        view.onExited = onExited
+        return view
+    }
+
+    func updateNSView(_ nsView: HoverTrackingView, context: Context) {
+        nsView.onExited = onExited
+    }
+}
 
 // MARK: - GlanceWindowController
 // ─────────────────────────────────────────────────────────────────────────────
-// The main controller for Glance's floating PiP window.
-// It orchestrates a single-window architecture that supports:
-// - Borderless, floating window level configuration.
-// - Mouse event click-through when the hover controls are hidden.
-// - SwiftUI DragGesture handling on the window's content view for moving/dragging.
-// - Native spring snapping animation on release (.spring(response: 0.3, dampingFraction: 0.6)).
-// - Dynamic resize based on zoom presets.
+// Owns the single floating PiP panel.
+//
+// Ghost mode (click-through when the cursor is elsewhere) is driven by events,
+// not by polling. The previous implementation ran a 20 Hz `Timer` that read
+// `NSEvent.mouseLocation` and flipped `ignoresMouseEvents` — that is what caused
+// the drag ghosting: for up to 50 ms after the cursor entered the window the
+// panel was still click-through, so mouse-down landed on whatever was behind it.
+//
+// Instead:
+//   * a **global** mouse-moved monitor notices the cursor entering the panel's
+//     frame while the panel is still click-through, and
+//   * an **NSTrackingArea** (`.activeAlways`) inside the panel notices it
+//     leaving.
+// Both are exact; neither costs anything while the cursor is idle.
 // ─────────────────────────────────────────────────────────────────────────────
 
 @MainActor
 final class GlanceWindowController {
-    
+
     // MARK: - Properties
-    
-    /// The single floating panel displaying video and controls.
-    private var panel: NSPanel?
-    
-    /// Shared application state.
+
+    private var panel: GlancePanel?
     private let appState: AppState
-    
-    /// The capture engine.
     private let captureEngine: CaptureEngine
-    
-    /// Timer checking if the mouse is hovering over the window.
-    private var hoverTimer: Timer?
-    
+
+    /// Global mouse-moved monitor used to detect cursor entry while the panel
+    /// is in click-through mode (events over a click-through window are
+    /// delivered to the app underneath, so only a global monitor can see them).
+    private var globalMouseMonitor: Any?
+
+    /// Live-resize notification tokens.
+    private var resizeObservers: [NSObjectProtocol] = []
+
+    /// The panel's root hosting view, retained so Ghost Mode can adjust its
+    /// hit-testing region.
+    private weak var hostingView: FirstMouseHostingView<PiPContentView>?
+
+    /// Size and inset of the Ghost Mode exit badge, in points.
+    private static let badgeSize: CGFloat = 34
+    private static let badgeInset: CGFloat = 6
+
+    /// Opacity the panel fades to in Ghost Mode.
+    private static let ghostAlpha: CGFloat = 0.55
+
+    // MARK: - Sizing
+
+    /// Smallest PiP the user can shrink to.
+    static let minPanelWidth: CGFloat = 160
+    static let minPanelHeight: CGFloat = 100
+
+    /// Largest initial width; the height follows from the capture's ratio.
+    static let maxInitialWidth: CGFloat = 400
+
+    /// Initial panel size for a capture of `captureSize`, preserving its exact
+    /// aspect ratio and never dropping below the minimums.
+    static func initialPanelSize(for captureSize: CGSize) -> CGSize {
+        // Guard the ratio: a zero dimension would make this NaN, and AppKit
+        // raises on a NaN frame rather than ignoring it.
+        guard captureSize.width > 0, captureSize.height > 0 else {
+            return CGSize(width: minPanelWidth, height: minPanelHeight)
+        }
+        let width = min(maxInitialWidth, captureSize.width)
+        return clampToMinimum(
+            CGSize(width: width, height: width * captureSize.height / captureSize.width),
+            aspect: captureSize
+        )
+    }
+
+    /// Scales `size` up until both dimensions clear the minimums, keeping the
+    /// aspect ratio of `aspect` exactly.
+    ///
+    /// Scaling (rather than clamping each axis independently) matters because
+    /// the panel has a `contentAspectRatio` constraint: handing AppKit a
+    /// minimum size whose ratio disagrees with that constraint gives its
+    /// resize solver two incompatible rules to satisfy.
+    static func clampToMinimum(_ size: CGSize, aspect: CGSize) -> CGSize {
+        guard aspect.width > 0, aspect.height > 0, size.width > 0, size.height > 0 else {
+            return CGSize(width: minPanelWidth, height: minPanelHeight)
+        }
+        let scale = max(1, max(minPanelWidth / size.width, minPanelHeight / size.height))
+        return CGSize(width: size.width * scale, height: size.height * scale)
+    }
+
     // MARK: - Initialization
-    
+
     init(appState: AppState, captureEngine: CaptureEngine) {
         self.appState = appState
         self.captureEngine = captureEngine
     }
-    
+
     // MARK: - Show / Close
-    
+
     /// Show the PiP window with the given initial size and position.
-    ///
-    /// - Parameters:
-    ///   - size: Initial size of the PiP window.
-    ///   - position: Initial screen position.
     func show(size: CGSize, position: CGPoint) {
-        // Create the single borderless floating panel
-        let panel = NSPanel(
+        assert(Thread.isMainThread, "GlanceWindowController.show must run on the main thread")
+
+        let panel = GlancePanel(
             contentRect: NSRect(origin: position, size: size),
             styleMask: [.borderless, .nonactivatingPanel, .resizable],
             backing: .buffered,
             defer: false
         )
-        
+
         panel.level = .floating
         panel.isOpaque = false
         panel.backgroundColor = .clear
         panel.hasShadow = true
-        panel.isMovable = false // We handle movement via DragGesture
-        panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
-        
-        // Starts in click-through mode
-        panel.ignoresMouseEvents = true
-        panel.animationBehavior = .utilityWindow
+        panel.isMovable = false                 // movement is handled by DragGesture
+        panel.isMovableByWindowBackground = false
+        panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
         panel.isFloatingPanel = true
         panel.becomesKeyOnlyIfNeeded = true
-        
-        // SwiftUI Content View
+        // `.none`, not `.utilityWindow`: any built-in frame animation competes
+        // with live resize and with the snap spring, which reads as judder.
+        panel.animationBehavior = .none
+        panel.hidesOnDeactivate = false          // an LSUIElement app deactivates constantly
+        panel.isReleasedWhenClosed = false
+
+        // Lock the panel to the aspect ratio of the captured region. AppKit then
+        // constrains every live corner/edge resize to that ratio, so the video
+        // always fills the panel exactly — no letterbox bars can appear, at any
+        // size the user drags to.
+        panel.contentAspectRatio = size
+        panel.contentMinSize = Self.clampToMinimum(
+            CGSize(width: Self.minPanelWidth, height: Self.minPanelWidth * size.height / max(size.width, 1)),
+            aspect: size
+        )
+
+        observeLiveResize(of: panel)
+
+        // Start in ghost mode.
+        panel.ignoresMouseEvents = true
+
         let contentView = PiPContentView(
             appState: appState,
             captureEngine: captureEngine,
             window: panel,
-            onClose: { [weak self] in
-                self?.close()
-            },
-            onBringToFront: { [weak self] in
-                self?.bringSourceToFront()
-            },
-            onZoomLevelChanged: { [weak self] newZoom in
-                self?.resizeWindow(toZoom: newZoom)
-            }
+            onClose: { [weak self] in self?.close() },
+            onBringToFront: { [weak self] in self?.bringSourceToFront() },
+            onZoomLevelChanged: { [weak self] newZoom in self?.resizeWindow(toZoom: newZoom) },
+            onHoverExited: { [weak self] in self?.setHovering(false) },
+            onToggleGhostMode: { [weak self] in self?.toggleGhostMode() }
         )
-        
-        let hostingView = NSHostingView(rootView: contentView)
+
+        let hostingView = FirstMouseHostingView(rootView: contentView)
         hostingView.autoresizingMask = [.width, .height]
         panel.contentView = hostingView
-        
+        self.hostingView = hostingView
+
         self.panel = panel
-        
-        // Make the panel visible
-        panel.makeKeyAndOrderFront(nil)
-        
-        // Start mouse hover tracking
-        startHoverTracking()
-        
-        // Snap to nearest corner initially using spring animation
+
+        // Snap to the nearest corner *before* ordering in, so the panel doesn't
+        // visibly jump from its provisional position on the first frame.
         let screen = panel.screen ?? NSScreen.main ?? NSScreen.screens[0]
-        let targetOrigin = SnapEngine.snapPosition(for: panel.frame, on: screen)
-        panel.setFrameOrigin(targetOrigin)
+        panel.setFrameOrigin(SnapEngine.snapPosition(for: panel.frame, on: screen))
+
+        // `orderFrontRegardless` rather than `makeKeyAndOrderFront`: Glance is a
+        // background agent, so it is never the active app and AppKit will refuse
+        // an ordinary orderFront from an inactive application.
+        panel.orderFrontRegardless()
+
+        Log.window.info("""
+            PiP panel shown — frame=\(NSStringFromRect(panel.frame), privacy: .public) \
+            level=\(panel.level.rawValue, privacy: .public) \
+            visible=\(panel.isVisible, privacy: .public) \
+            screen=\(NSStringFromRect(screen.frame), privacy: .public)
+            """)
+
+        startHoverMonitoring()
+
+        // The panel did not exist when the content filter was built, so it is
+        // still inside the captured region. Rebuild the filter now to exclude
+        // it — otherwise the PiP mirrors itself when it overlaps the selection.
+        Task { await captureEngine.refreshExcludedWindows() }
     }
-    
+
     /// Close the PiP window and stop capture.
     func close() {
-        hoverTimer?.invalidate()
-        hoverTimer = nil
-        
-        // Clear capture engine frame callback
-        captureEngine.onFrameReceived = nil
-        
-        Task {
-            await captureEngine.stopCapture()
+        Log.window.info("Closing PiP panel")
+
+        stopHoverMonitoring()
+        SnapEngine.cancelAnimation()
+
+        for observer in resizeObservers {
+            NotificationCenter.default.removeObserver(observer)
         }
-        
+        resizeObservers.removeAll()
+
+        captureEngine.onFrameReceived = nil
+
+        Task { await captureEngine.stopCapture() }
+
         panel?.orderOut(nil)
         panel = nil
-        
+
         appState.reset()
     }
-    
-    // MARK: - Hover Tracking Timer
-    
-    /// Periodically queries the global mouse location to detect if the cursor
-    /// is hovering over the PiP window.
-    /// - When hovering: disables click-through (ignoresMouseEvents = false)
-    ///   so controls can intercept clicks and dragging works.
-    /// - Otherwise: enables click-through (ignoresMouseEvents = true) so
-    ///   clicks pass directly to the desktop below.
-    private func startHoverTracking() {
-        hoverTimer?.invalidate()
-        
-        hoverTimer = Timer.scheduledTimer(withTimeInterval: 0.05, repeats: true) { [weak self] _ in
-            guard let self = self else { return }
-            
-            Task { @MainActor in
-                guard let panel = self.panel else { return }
-                
-                // If currently dragging, do not toggle mouse events or hide controls
-                guard !self.appState.isDragging else { return }
-                
-                let mouseLocation = NSEvent.mouseLocation
-                let windowFrame = panel.frame
-                let isInside = windowFrame.contains(mouseLocation)
-                
-                if isInside != self.appState.isHovering {
-                    // Update ignoresMouseEvents depending on hover state.
-                    panel.ignoresMouseEvents = !isInside
-                    
-                    // Animate the SwiftUI state change
-                    withAnimation(.easeInOut(duration: 0.2)) {
-                        self.appState.isHovering = isInside
-                    }
+
+    // MARK: - Ghost Mode
+
+    /// Flip Ghost Mode.
+    func toggleGhostMode() {
+        setGhostMode(!appState.isGhostMode)
+    }
+
+    /// Engage or release Ghost Mode.
+    ///
+    /// Engaged, the panel drops to ``ghostAlpha`` and stops receiving mouse
+    /// events entirely, so clicks land on the app behind it. The only ways back
+    /// out are the global hotkey, the menu bar item, and the corner exit badge
+    /// (see ``updateGhostHitTesting(cursorAt:)``).
+    func setGhostMode(_ enabled: Bool) {
+        guard let panel, appState.isGhostMode != enabled else { return }
+        appState.isGhostMode = enabled
+
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = 0.2
+            panel.animator().alphaValue = enabled ? Self.ghostAlpha : 1.0
+        }
+
+        if enabled {
+            panel.ignoresMouseEvents = true
+            appState.isHovering = false
+            hostingView?.ghostHitRect = badgeRectInView()
+        } else {
+            hostingView?.ghostHitRect = nil
+            // Fall back to the normal hover rule: click-through until entered.
+            panel.ignoresMouseEvents = !panel.frame.contains(NSEvent.mouseLocation)
+        }
+
+        Log.window.info("Ghost Mode \(enabled ? "engaged" : "released", privacy: .public)")
+    }
+
+    /// The exit badge, in the hosting view's coordinate space (bottom-left origin).
+    private func badgeRectInView() -> NSRect {
+        guard let panel else { return .zero }
+        let h = panel.contentView?.bounds.height ?? panel.frame.height
+        return NSRect(
+            x: Self.badgeInset,
+            y: h - Self.badgeSize - Self.badgeInset,
+            width: Self.badgeSize,
+            height: Self.badgeSize
+        )
+    }
+
+    /// The exit badge in global screen coordinates.
+    private func badgeRectOnScreen() -> NSRect {
+        guard let panel else { return .zero }
+        return NSRect(
+            x: panel.frame.minX + Self.badgeInset,
+            y: panel.frame.maxY - Self.badgeSize - Self.badgeInset,
+            width: Self.badgeSize,
+            height: Self.badgeSize
+        )
+    }
+
+    /// While in Ghost Mode, briefly make the panel interactive when — and only
+    /// when — the cursor is over the exit badge.
+    private func updateGhostHitTesting(cursorAt location: NSPoint) {
+        guard let panel, appState.isGhostMode else { return }
+        hostingView?.ghostHitRect = badgeRectInView()
+
+        let overBadge = badgeRectOnScreen().contains(location)
+        if panel.ignoresMouseEvents == overBadge {
+            panel.ignoresMouseEvents = !overBadge
+        }
+    }
+
+    // MARK: - Live Resize
+
+    /// Suspends snapping and click-through toggling for the duration of an
+    /// AppKit live resize, and snaps once when the user lets go.
+    ///
+    /// The stream is deliberately NOT reconfigured here. It keeps capturing at
+    /// the selected source resolution and the compositor rescales the IOSurface
+    /// on the GPU — reconfiguring `SCStreamConfiguration` on every resize tick
+    /// would tear down and rebuild the capture pipeline dozens of times a second.
+    private func observeLiveResize(of panel: NSPanel) {
+        let nc = NotificationCenter.default
+
+        resizeObservers.append(nc.addObserver(
+            forName: NSWindow.willStartLiveResizeNotification,
+            object: panel,
+            queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                // Kill any in-flight snap before AppKit starts writing the frame.
+                SnapEngine.cancelAnimation()
+                self.appState.isResizing = true
+            }
+        })
+
+        resizeObservers.append(nc.addObserver(
+            forName: NSWindow.didEndLiveResizeNotification,
+            object: panel,
+            queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self, let panel = self.panel else { return }
+                self.appState.isResizing = false
+                self.appState.windowSize = panel.frame.size
+
+                // Snap only now that the mouse is up.
+                let screen = panel.screen ?? NSScreen.main ?? NSScreen.screens[0]
+                SnapEngine.animateSpring(
+                    window: panel,
+                    to: SnapEngine.snapPosition(for: panel.frame, on: screen)
+                )
+                Log.window.debug("Live resize ended — size \(NSStringFromSize(panel.frame.size), privacy: .public)")
+            }
+        })
+    }
+
+    // MARK: - Ghost Mode (event-driven hover)
+
+    private func startHoverMonitoring() {
+        stopHoverMonitoring()
+        globalMouseMonitor = NSEvent.addGlobalMonitorForEvents(
+            matching: [.mouseMoved, .leftMouseDragged]
+        ) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self, let panel = self.panel else { return }
+                let location = NSEvent.mouseLocation
+
+                // Ghost Mode owns the mouse-event flag while it is engaged.
+                if self.appState.isGhostMode {
+                    self.updateGhostHitTesting(cursorAt: location)
+                    return
+                }
+
+                guard !self.appState.isHovering,
+                      !self.appState.isDragging,
+                      !self.appState.isResizing else { return }
+                if panel.frame.contains(location) {
+                    self.setHovering(true)
                 }
             }
         }
     }
-    
-    // MARK: - Resizing
-    
-    private func resizeWindow(toZoom zoom: CGFloat) {
-        guard let panel = panel else { return }
-        
-        let sourceRect = appState.sourceRect
-        let aspectRatio = sourceRect.width / sourceRect.height
-        
-        let baseWidth = min(400, sourceRect.width)
-        let baseHeight = baseWidth / aspectRatio
-        
-        let newSize = CGSize(width: baseWidth * zoom, height: baseHeight * zoom)
-        let currentFrame = panel.frame
-        
-        let targetFrame = NSRect(
-            x: currentFrame.minX,
-            y: currentFrame.minY,
-            width: newSize.width,
-            height: newSize.height
-        )
-        
-        let screen = panel.screen ?? NSScreen.main ?? NSScreen.screens[0]
-        let targetOrigin = SnapEngine.snapPosition(for: targetFrame, on: screen)
-        
-        // Resize frame size instantly, then spring-snap the origin to the correct corner
-        panel.setFrame(NSRect(origin: currentFrame.origin, size: newSize), display: true)
-        SnapEngine.animateSpring(window: panel, to: targetOrigin)
+
+    private func stopHoverMonitoring() {
+        if let globalMouseMonitor {
+            NSEvent.removeMonitor(globalMouseMonitor)
+        }
+        globalMouseMonitor = nil
     }
-    
+
+    /// Enter or leave interactive mode.
+    fileprivate func setHovering(_ hovering: Bool) {
+        guard let panel, appState.isHovering != hovering, !appState.isGhostMode else { return }
+        // Never drop back to click-through mid-gesture: that would cancel the
+        // drag and hand the remaining mouse events to the window underneath.
+        if !hovering && (appState.isDragging || appState.isResizing) { return }
+
+        panel.ignoresMouseEvents = !hovering
+        withAnimation(.easeInOut(duration: 0.15)) {
+            appState.isHovering = hovering
+        }
+    }
+
+    // MARK: - Resizing
+
+    private func resizeWindow(toZoom zoom: CGFloat) {
+        guard let panel else { return }
+
+        // Derive from the ACTUAL capture crop, so zoom can never drift the panel
+        // off the stream's aspect ratio.
+        let capture = appState.captureSize
+        guard capture.width > 0, capture.height > 0, zoom > 0 else {
+            Log.window.error("resizeWindow ignored — captureSize=\(NSStringFromSize(capture), privacy: .public) zoom=\(zoom, privacy: .public)")
+            return
+        }
+
+        let base = Self.initialPanelSize(for: capture)
+        let newSize = Self.clampToMinimum(
+            CGSize(width: base.width * zoom, height: base.height * zoom),
+            aspect: capture
+        )
+
+        // Resizing the panel does NOT touch the stream. SCStream keeps capturing
+        // at the source resolution and Core Animation rescales the IOSurface on
+        // the GPU; reconfiguring the stream per resize tick would tear down and
+        // rebuild the capture pipeline dozens of times a second.
+        SnapEngine.cancelAnimation()
+        panel.setFrame(NSRect(origin: panel.frame.origin, size: newSize), display: true)
+        appState.windowSize = newSize
+
+        let screen = panel.screen ?? NSScreen.main ?? NSScreen.screens[0]
+        SnapEngine.animateSpring(
+            window: panel,
+            to: SnapEngine.snapPosition(for: panel.frame, on: screen)
+        )
+    }
+
     // MARK: - Source App Interaction
-    
+
+    /// Bring the captured window's application forward.
+    ///
+    /// `activate(options: [.activateIgnoringOtherApps])` is deprecated on
+    /// macOS 14+, where the plain `activate()` already ignores other apps for a
+    /// foreground-requested activation. Both are kept so the behaviour is
+    /// identical on either OS rather than silently doing nothing on one.
+    ///
+    /// Raising the *specific* window (rather than just the app) needs the
+    /// Accessibility API. We only attempt it when the process is already
+    /// trusted — Glance never prompts for Accessibility, since it is a
+    /// nice-to-have and the app is fully functional without it.
     private func bringSourceToFront() {
         guard let pid = appState.sourceAppPID,
-              let app = NSRunningApplication(processIdentifier: pid) else { return }
-        app.activate()
+              let app = NSRunningApplication(processIdentifier: pid) else {
+            Log.window.error("bringSourceToFront: no source application recorded")
+            return
+        }
+
+        let activated: Bool
+        if #available(macOS 14.0, *) {
+            activated = app.activate()
+        } else {
+            activated = app.activate(options: [.activateIgnoringOtherApps])
+        }
+        Log.window.info("Activated source app pid=\(pid, privacy: .public) -> \(activated, privacy: .public)")
+
+        raiseSourceWindowIfPermitted(pid: pid)
+    }
+
+    /// Raises the captured window itself via Accessibility, when permitted.
+    private func raiseSourceWindowIfPermitted(pid: pid_t) {
+        guard AXIsProcessTrusted() else {
+            Log.window.debug("Accessibility not granted — activated the app but could not raise its specific window")
+            return
+        }
+
+        let axApp = AXUIElementCreateApplication(pid)
+        var value: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(axApp, kAXWindowsAttribute as CFString, &value) == .success,
+              let windows = value as? [AXUIElement], let front = windows.first else { return }
+
+        AXUIElementPerformAction(front, kAXRaiseAction as CFString)
+        AXUIElementSetAttributeValue(axApp, kAXFrontmostAttribute as CFString, kCFBooleanTrue)
     }
 }
 
 // MARK: - PiPContentView
 // ─────────────────────────────────────────────────────────────────────────────
-// The root SwiftUI view for the single-window PiP view hierarchy.
-// Orchestrates the Metal renderer, paused state, and hover controls.
-// Handles user drag events to move and snap the PiP window.
+// Root SwiftUI view for the PiP panel: video layer, paused overlay, hover
+// controls, and the drag-to-move / snap gesture.
 // ─────────────────────────────────────────────────────────────────────────────
 
 struct PiPContentView: View {
     let appState: AppState
     let captureEngine: CaptureEngine
     let window: NSWindow
-    
+
     var onClose: () -> Void
     var onBringToFront: () -> Void
     var onZoomLevelChanged: (CGFloat) -> Void
-    
+    var onHoverExited: () -> Void
+    var onToggleGhostMode: () -> Void
+
     @State private var initialWindowOrigin: CGPoint? = nil
-    
+
+    /// Width of the border band reserved for AppKit's live-resize handles.
+    ///
+    /// A drag that begins inside this band is a resize, not a move, so the move
+    /// gesture must ignore it — otherwise a corner drag repositions and resizes
+    /// the panel at the same time and the window chases the cursor.
+    private let resizeMargin: CGFloat = 12
+
     var body: some View {
-        ZStack {
-            // High-performance GPU video stream rendering
-            PiPVideoView(captureEngine: captureEngine)
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-            
-            // Paused overlay view
-            if appState.isPaused {
-                PausedOverlayView()
-            }
-            
-            // UI Controls overlay
-            HoverControlsView(
-                isHovering: appState.isHovering,
-                onClose: onClose,
-                onBringToFront: onBringToFront,
-                zoomLevel: Binding(
-                    get: { appState.zoomLevel },
-                    set: { appState.zoomLevel = $0 }
+        GeometryReader { geometry in
+            ZStack {
+                // GPU video stream.
+                PiPVideoView(captureEngine: captureEngine)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+
+                if appState.isPaused {
+                    PausedOverlayView()
+                }
+
+                HoverControlsView(
+                    isHovering: appState.isHovering,
+                    isGhostMode: appState.isGhostMode,
+                    onClose: onClose,
+                    onBringToFront: onBringToFront,
+                    onToggleGhostMode: onToggleGhostMode,
+                    zoomLevel: Binding(
+                        get: { appState.zoomLevel },
+                        set: { appState.zoomLevel = $0 }
+                    )
                 )
-            )
-        }
-        .background(Color.black)
-        .clipShape(RoundedRectangle(cornerRadius: 12))
-        .gesture(
-            DragGesture(minimumDistance: 0)
-                .onChanged { value in
-                    if initialWindowOrigin == nil {
-                        initialWindowOrigin = window.frame.origin
-                        // Set dragging flag to prevent timer from toggling ignoresMouseEvents
-                        appState.isDragging = true
+
+                // Ghost Mode exit badge. Always visible while ghosting (hover
+                // controls are unreachable then, since the panel ignores the
+                // mouse everywhere except this badge).
+                if appState.isGhostMode {
+                    GhostExitBadge(action: onToggleGhostMode)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                        .padding(6)
+                }
+
+                // Reports cursor exit so the panel can return to click-through mode.
+                HoverTracker(onExited: onHoverExited)
+                    .allowsHitTesting(false)
+            }
+            .background(Color.black)
+            .clipShape(RoundedRectangle(cornerRadius: 12))
+            .contentShape(Rectangle())
+            .gesture(
+                DragGesture(minimumDistance: 2)
+                    .onChanged { value in
+                        // Hand the gesture to AppKit if it started on a resize
+                        // edge, and stay out of the way for the whole drag.
+                        guard !appState.isResizing,
+                              !isInResizeBand(value.startLocation, in: geometry.size)
+                        else { return }
+
+                        if initialWindowOrigin == nil {
+                            initialWindowOrigin = window.frame.origin
+                            appState.isDragging = true
+                            // A snap still settling would otherwise keep writing
+                            // the origin underneath the drag.
+                            SnapEngine.cancelAnimation()
+                        }
+                        guard let startOrigin = initialWindowOrigin else { return }
+                        // SwiftUI translation is top-down; AppKit origins are bottom-up.
+                        window.setFrameOrigin(CGPoint(
+                            x: startOrigin.x + value.translation.width,
+                            y: startOrigin.y - value.translation.height
+                        ))
                     }
-                    
-                    if let startOrigin = initialWindowOrigin {
-                        let translation = value.translation
-                        // Map top-down SwiftUI Y coordinates to bottom-up AppKit coordinates
-                        let newOrigin = CGPoint(
-                            x: startOrigin.x + translation.width,
-                            y: startOrigin.y - translation.height
+                    .onEnded { _ in
+                        guard initialWindowOrigin != nil else { return }
+                        initialWindowOrigin = nil
+                        appState.isDragging = false
+
+                        let screen = window.screen ?? NSScreen.main ?? NSScreen.screens[0]
+                        SnapEngine.animateSpring(
+                            window: window,
+                            to: SnapEngine.snapPosition(for: window.frame, on: screen)
                         )
-                        window.setFrameOrigin(newOrigin)
                     }
-                }
-                .onEnded { _ in
-                    initialWindowOrigin = nil
-                    appState.isDragging = false
-                    
-                    // Snap window to the nearest edge using native spring physics (.spring(0.3, 0.6))
-                    let screen = window.screen ?? NSScreen.main ?? NSScreen.screens[0]
-                    let targetOrigin = SnapEngine.snapPosition(for: window.frame, on: screen)
-                    SnapEngine.animateSpring(window: window, to: targetOrigin)
-                }
-        )
-        .onChange(of: appState.zoomLevel) { _, newValue in
-            onZoomLevelChanged(newValue)
+            )
+            .onChange(of: appState.zoomLevel) { _, newValue in
+                onZoomLevelChanged(newValue)
+            }
         }
+    }
+
+    /// Whether `point` (in view coordinates) falls in the resize border band.
+    private func isInResizeBand(_ point: CGPoint, in size: CGSize) -> Bool {
+        point.x < resizeMargin
+            || point.y < resizeMargin
+            || point.x > size.width - resizeMargin
+            || point.y > size.height - resizeMargin
     }
 }

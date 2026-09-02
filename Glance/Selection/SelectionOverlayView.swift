@@ -39,9 +39,13 @@ class SelectionOverlayView: NSView {
     // MARK: - Callbacks
 
     /// Called when the user completes a valid selection.
-    /// The `CGRect` is in screen coordinates with a top-left origin,
-    /// ready for use with ScreenCaptureKit's `contentFilter` crop rect.
-    var onSelectionComplete: ((CGRect) -> Void)?
+    ///
+    /// The rect is in **Cocoa global screen coordinates** (bottom-left origin),
+    /// paired with the `NSScreen` it was drawn on. The flip into
+    /// ScreenCaptureKit's top-left, display-relative space happens in
+    /// `CaptureEngine`, where the target `SCDisplay` is known — doing it here
+    /// against the primary screen's height was wrong on any secondary display.
+    var onSelectionComplete: ((CGRect, NSScreen) -> Void)?
 
     /// Called when the user cancels the selection via ESC or right-click.
     var onSelectionCancelled: (() -> Void)?
@@ -240,22 +244,15 @@ class SelectionOverlayView: NSView {
         }
 
         // --- Coordinate Conversion ---
-        // Step 1: View coordinates → screen coordinates (bottom-left origin)
-        guard let window = self.window else { return }
+        // View coordinates → Cocoa global screen coordinates (bottom-left
+        // origin). No Y flip here: the caller needs to know which display the
+        // selection belongs to before it can flip correctly, and this view's
+        // window is pinned to exactly that display.
+        guard let window = self.window,
+              let screen = window.screen ?? NSScreen.main else { return }
         let screenRect = window.convertToScreen(rect)
 
-        // Step 2: Flip Y axis from bottom-left to top-left origin.
-        // ScreenCaptureKit (and CGWindowListCreateImage) expect top-left.
-        guard let screen = NSScreen.main else { return }
-        let flippedY = screen.frame.height - screenRect.maxY
-        let captureRect = CGRect(
-            x: screenRect.origin.x,
-            y: flippedY,
-            width: screenRect.width,
-            height: screenRect.height
-        )
-
-        onSelectionComplete?(captureRect)
+        onSelectionComplete?(screenRect, screen)
     }
 
     /// Tracks mouse movement for crosshair rendering when not dragging.

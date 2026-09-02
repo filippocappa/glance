@@ -2,64 +2,38 @@
 // Glance
 //
 // Core capture engine wrapping ScreenCaptureKit.
-// Configures SCStream with a sourceRect so the WindowServer's compositor
-// crops at the GPU level, sending only the selected bounding-box pixels
-// over the XPC/IPC boundary. This keeps CPU and GPU overhead near zero
-// compared to capturing the full display and cropping in user-space.
+//
+// The stream targets a single window via SCContentFilter(desktopIndependentWindow:)
+// and optionally narrows to a sub-region with SCStreamConfiguration.sourceRect,
+// so the WindowServer's compositor crops on the GPU and only the selected pixels
+// cross the XPC boundary.
 
 import ScreenCaptureKit
 import CoreMedia
-import Combine
+import CoreVideo
 import AppKit
 import IOSurface
 
 // MARK: - CaptureEngine
 
-/// The capture engine manages an ``SCStream`` session that streams a
-/// sub-region of a display into an ``IOSurface`` for zero-copy rendering
-/// inside a PiP overlay.
+/// Manages an ``SCStream`` session that streams a window (or a sub-region of
+/// one) into an ``IOSurface`` for zero-copy presentation in the PiP overlay.
 ///
-/// ## Architecture
+/// ## Pipeline
 ///
 /// ```
-/// ┌────────────────────┐
-/// │   WindowServer     │  ← crops sourceRect on the GPU
-/// │  (compositor)      │
-/// └────────┬───────────┘
-///          │ IOSurface (XPC)
-///          ▼
-/// ┌────────────────────┐
-/// │   CaptureEngine    │  ← receives CMSampleBuffer, extracts IOSurface
-/// │  (SCStreamOutput)  │
-/// └────────┬───────────┘
-///          │ MainActor
-///          ▼
-/// ┌────────────────────┐
-/// │     AppState       │  ← currentFrame drives SwiftUI / CALayerHost
-/// └────────────────────┘
+/// WindowServer ──IOSurface(XPC)──▶ CaptureEngine ──main queue──▶ VideoLayerView
+///  (GPU crop)                      (SCStreamOutput)              (layer.contents)
 /// ```
 ///
-/// ## Key Design Decisions
+/// ## Ordering invariants
 ///
-/// 1. **sourceRect on SCStreamConfiguration**: This is the single most
-///    important optimisation. By setting `config.sourceRect` the
-///    WindowServer only composites and transfers the selected rectangle,
-///    not the entire display. The output resolution is set to match the
-///    sourceRect (in backing pixels) so no scaling is performed either.
-///
-/// 2. **IOSurface zero-copy path**: We extract the `IOSurface` directly
-///    from the `CVPixelBuffer` attached to each `CMSampleBuffer`.
-///    The surface is already in GPU-accessible memory so the PiP overlay
-///    can render it without any CPU-side copy or format conversion.
-///
-/// 3. **Workspace monitoring**: We observe `NSWorkspace` notifications
-///    to detect when the source application is hidden or minimised.
-///    When that happens we mark the stream as paused so the UI can show
-///    an appropriate placeholder instead of a stale frame.
-///
-/// 4. **@Observable (not ObservableObject)**: Uses the Swift 5.9
-///    Observation framework so SwiftUI views automatically track only
-///    the properties they actually read, reducing unnecessary redraws.
+/// 1. Screen Recording access is preflighted **before** any `SCStream` is
+///    constructed. Creating a stream while TCC denies access yields
+///    `SCStreamErrorDomain` -3801 and a half-initialised stream object.
+/// 2. `self.stream` is assigned before `startCapture()` is awaited, so the
+///    stream cannot be deallocated mid-start (a released `SCStream` stops
+///    delivering frames without reporting an error).
 @Observable
 final class CaptureEngine: NSObject {
 
@@ -71,44 +45,106 @@ final class CaptureEngine: NSObject {
     // MARK: Private state
 
     /// The active ScreenCaptureKit stream, if any.
+    ///
+    /// This strong reference is load-bearing: `SCStream` stops delivering
+    /// frames the moment its last reference goes away, and it does so silently
+    /// — `stream(_:didStopWithError:)` is never called.
     private var stream: SCStream?
 
     /// The configuration object used for the current (or last) stream.
     /// Retained so that ``updateSourceRect(_:)`` can mutate and re-apply it.
     private var streamConfiguration: SCStreamConfiguration?
 
+    /// What the current stream is filtered to.
+    private var captureTarget: CaptureTarget?
+
+    /// The display being captured in display mode, retained so the content
+    /// filter can be rebuilt (see ``refreshExcludedWindows()``). `nil` in window
+    /// mode, where nothing needs excluding.
+    private var captureDisplay: SCDisplay?
+
+    /// The `NSScreen` matching ``captureDisplay``, used for the Cocoa →
+    /// ScreenCaptureKit coordinate flip.
+    private var captureScreen: NSScreen?
+
+    /// The selected region in Cocoa global coordinates.
+    private var selectionRect: CGRect = .zero
+
+    /// How many Glance windows the current filter excludes, so a refresh that
+    /// would change nothing can be skipped.
+    private var excludedWindowCount: Int = -1
+
+    /// Point-to-pixel scale reported by the content filter.
+    private var pointPixelScale: CGFloat = 2.0
+
     /// Weak back-reference to the shared application state.
-    /// We write captured frames and status flags here.
     private weak var appState: AppState?
 
     /// Tokens for NSWorkspace notification observers.
-    /// Removed on ``stopCapture()`` or ``deinit``.
     private var workspaceObservers: [NSObjectProtocol] = []
 
     /// Dedicated serial queue for receiving SCStream output.
-    /// `.userInteractive` QoS ensures frames are processed promptly.
     private let captureQueue = DispatchQueue(
         label: "com.glance.capture",
         qos: .userInteractive
     )
 
-    // MARK: Callbacks & Rendering Pipeline
+    // MARK: Frame delivery
 
-    /// Callback invoked on the main thread when a new frame is decoded and ready for display.
-    var onFrameReceived: ((CVPixelBuffer) -> Void)?
+    /// Invoked on the main thread with each new frame's IOSurface.
+    ///
+    /// Prefer ``attachRenderer(_:)`` over assigning this directly — it replays
+    /// the buffered frame so a late renderer is not left with a black panel.
+    var onFrameReceived: ((IOSurface) -> Void)?
 
-    /// Lock protecting the rendering state for frame-dropping behavior.
+    /// Installs the frame callback and immediately replays the most recent
+    /// frame, if one has already arrived.
+    @MainActor
+    func attachRenderer(_ renderer: @escaping (IOSurface) -> Void) {
+        onFrameReceived = renderer
+        if let buffered = withRenderingLock({ lastSurface }) {
+            Log.capture.info("Replaying buffered frame to newly attached renderer")
+            renderer(buffered)
+        }
+    }
+
+    /// Wall-clock time of the most recent delivered frame, guarded by
+    /// ``renderingLock``. Used to distinguish "the source window is minimised"
+    /// from "SCK briefly failed to list the window", which the old poll could
+    /// not tell apart and which left the Paused overlay stuck over live video.
+    private var lastFrameTime: CFAbsoluteTime = 0
+
+    /// Total frames received from SCK (including dropped ones).
+    private var receivedFrameCount: UInt64 = 0
+
+    /// Lock protecting the frame-drop gate and the counters above.
     private let renderingLock = NSLock()
 
-    /// Tracks whether a frame is currently being processed/rendered on the main thread.
+    /// Whether a frame is currently in flight to the main thread.
     private var isProcessingFrame = false
+
+    /// The most recently received surface.
+    ///
+    /// The first frame reliably arrives ~70ms before SwiftUI builds the PiP
+    /// view, so without this the opening frame was logged as
+    /// "no renderer attached" and discarded, leaving the panel black until the
+    /// source window next redrew. ``attachRenderer(_:)`` replays it.
+    private var lastSurface: IOSurface?
+
+    /// Runs `body` under ``renderingLock``.
+    ///
+    /// `NSLock.lock()`/`unlock()` are unavailable from async contexts (holding a
+    /// lock across a suspension point can deadlock the cooperative pool), so
+    /// every async caller goes through this synchronous, non-suspending helper.
+    private func withRenderingLock<T>(_ body: () -> T) -> T {
+        renderingLock.lock()
+        defer { renderingLock.unlock() }
+        return body()
+    }
 
     // MARK: Lifecycle
 
     deinit {
-        // Belt-and-suspenders cleanup of notification observers.
-        // (stopCapture should already have removed them, but the engine
-        //  might be deallocated without an explicit stop.)
         for observer in workspaceObservers {
             NSWorkspace.shared.notificationCenter.removeObserver(observer)
         }
@@ -117,343 +153,511 @@ final class CaptureEngine: NSObject {
 
     // MARK: - Public API
 
-    /// Start capturing the specified window.
+    /// Start capturing the user's selected region.
     ///
-    /// - Parameters:
-    ///   - window: The ``SCWindow`` to capture from.
-    ///   - sourceRect: The sub-region of the screen containing the window, in
-    ///     global screen coordinates. Used to calculate the crop relative to the window.
-    ///   - appState: The shared ``AppState`` that receives frames and
-    ///     status updates.
+    /// Prefers **window-relative** capture: if a single ordinary window sits
+    /// under the selection, the stream is filtered to that window and the crop
+    /// is expressed relative to the window's own content rect. ScreenCaptureKit
+    /// then keeps the crop locked to that part of the window as it moves, so
+    /// dragging Safari across the screen no longer leaves the PiP showing
+    /// whatever is now behind it.
     ///
-    /// - Throws: Any error from ScreenCaptureKit stream setup.
-    func startCapture(
-        window: SCWindow,
-        sourceRect: CGRect,
-        appState: AppState
-    ) async throws {
-        // Ensure any previous session is torn down first.
-        if isRunning {
-            await stopCapture()
+    /// Falls back to display capture when the selection is over the desktop or
+    /// straddles several windows.
+    func startCapture(selection: Selection, appState: AppState) async throws {
+        guard Permissions.ensureScreenRecordingAccess() else {
+            Log.capture.error("startCapture aborted — Screen Recording permission not granted")
+            throw CaptureError.permissionDenied
         }
+
+        // Single-instance: tear down any previous session first, so a second
+        // "New Glance" cannot leave a zombie SCStream holding the recording
+        // indicator open.
+        await stopCapture()
 
         self.appState = appState
+        self.captureScreen = selection.screen
+        self.selectionRect = selection.rect
 
-        // Calculate the crop rectangle relative to the window's top-left origin.
-        // ScreenCaptureKit's window-independent capture coordinates are relative to the window.
-        let windowFrame = window.frame
-        let intersection = sourceRect.intersection(windowFrame)
-        let relativeCropRect: CGRect
-        if !intersection.isNull && intersection.width > 0 && intersection.height > 0 {
-            relativeCropRect = CGRect(
-                x: intersection.origin.x - windowFrame.origin.x,
-                y: intersection.origin.y - windowFrame.origin.y,
-                width: intersection.width,
-                height: intersection.height
-            )
-        } else {
-            // Fallback to the whole window if there is no intersection
-            relativeCropRect = CGRect(origin: .zero, size: windowFrame.size)
+        guard selection.rect.width >= 2, selection.rect.height >= 2 else {
+            throw CaptureError.invalidGeometry
         }
 
-        // -----------------------------------------------------------------
-        // Build SCStreamConfiguration
-        // -----------------------------------------------------------------
+        // ── Resolve the capture target ───────────────────────────────────
+        let target = try await resolveTarget(for: selection)
+        self.captureTarget = target
+
+        let filter: SCContentFilter
+        let crop: CGRect
+
+        switch target {
+        case let .window(window, windowCrop):
+            filter = SCContentFilter(desktopIndependentWindow: window)
+            crop = windowCrop
+            self.captureDisplay = nil
+            Log.capture.info("""
+                Window-relative capture — id=\(window.windowID, privacy: .public) \
+                app=\(window.owningApplication?.applicationName ?? "?", privacy: .public) \
+                windowFrame=\(NSStringFromRect(window.frame), privacy: .public) \
+                crop=\(NSStringFromRect(windowCrop), privacy: .public)
+                """)
+
+        case let .display(display, displayCrop):
+            // Excluding our own windows is mandatory in display mode: the PiP
+            // panel floats above the captured region, so leaving it in the
+            // filter feeds the panel's own output back in (infinite mirror).
+            // A window filter cannot include our panel, so this is display-only.
+            let excluded = (try? await ScreenPicker.glanceWindows()) ?? []
+            filter = SCContentFilter(display: display, excludingWindows: excluded)
+            crop = displayCrop
+            self.captureDisplay = display
+            self.excludedWindowCount = excluded.count
+            Log.capture.info("""
+                Display capture (no single window under the selection) — \
+                displayID=\(display.displayID, privacy: .public) \
+                crop=\(NSStringFromRect(displayCrop), privacy: .public)
+                """)
+        }
+
+        let scale = CGFloat(filter.pointPixelScale)
+        self.pointPixelScale = scale
+
+        guard crop.width >= 2, crop.height >= 2 else {
+            Log.capture.error("Selection maps to an empty crop \(NSStringFromRect(crop), privacy: .public)")
+            throw CaptureError.invalidGeometry
+        }
+
+        // ── Stream configuration ─────────────────────────────────────────
         let config = SCStreamConfiguration()
 
-        // Set the relative sourceRect crop relative to the window's coordinate space.
-        config.sourceRect = relativeCropRect
+        // `sourceRect` is in POINTS, in the filter's content-rect space.
+        config.sourceRect = crop
 
-        // Match output dimensions to the backing-pixel size of the crop.
-        let scale = NSScreen.main?.backingScaleFactor ?? 2.0
-        config.width = Int(relativeCropRect.width * scale)
-        config.height = Int(relativeCropRect.height * scale)
+        // `destinationRect` is deliberately NOT set. It is measured in
+        // output-surface PIXELS while `crop.size` is in points, so setting it to
+        // the crop's point size on a 2x display confined the frame to a quarter
+        // of the surface anchored at a corner. Unset, it defaults to the whole
+        // surface.
+        config.scalesToFit = false
 
-        // 60 fps — smooth and fluid without choking the CPU/GPU.
+        // Output resolution in BACKING PIXELS: crop points x display scale. This
+        // pairing (points in, pixels out) keeps the capture pixel-exact with no
+        // rescale. SCK also requires even dimensions; an odd width silently
+        // produces a stream that never emits a frame.
+        config.width = Self.evenPixels(crop.width * scale)
+        config.height = Self.evenPixels(crop.height * scale)
+
+        guard config.width > 0, config.height > 0 else {
+            Log.capture.error("Computed output size is empty (\(config.width)x\(config.height))")
+            throw CaptureError.invalidGeometry
+        }
+
         config.minimumFrameInterval = CMTime(value: 1, timescale: 60)
-
-        // Hide the system cursor inside the captured region.
-        config.showsCursor = false
-
-        // BGRA is the native format of IOSurface on macOS.
         config.pixelFormat = kCVPixelFormatType_32BGRA
-
-        // Allow up to 3 frames in the pipeline.
+        config.colorSpaceName = CGColorSpace.sRGB
+        config.showsCursor = false
+        config.capturesAudio = false
         config.queueDepth = 3
+        config.backgroundColor = .black
 
         self.streamConfiguration = config
 
-        // -----------------------------------------------------------------
-        // Build SCContentFilter
-        // -----------------------------------------------------------------
-        // Strictly capture ONLY this specific window.
-        let filter = SCContentFilter(desktopIndependentWindow: window)
+        Log.capture.info("""
+            SCStreamConfiguration: sourceRect=\(NSStringFromRect(crop), privacy: .public) \
+            output=\(config.width, privacy: .public)x\(config.height, privacy: .public) \
+            scale=\(scale, privacy: .public) pixelFormat=BGRA
+            """)
 
-        // -----------------------------------------------------------------
-        // Create and start the stream
-        // -----------------------------------------------------------------
-        let newStream = SCStream(
-            filter: filter,
-            configuration: config,
-            delegate: self          // SCStreamDelegate for error handling
-        )
+        // ── Create and start ─────────────────────────────────────────────
+        let newStream = SCStream(filter: filter, configuration: config, delegate: self)
+        try newStream.addStreamOutput(self, type: .screen, sampleHandlerQueue: captureQueue)
 
-        // Register ourselves as the output handler on a dedicated serial queue.
-        try newStream.addStreamOutput(
-            self,
-            type: .screen,
-            sampleHandlerQueue: captureQueue
-        )
-
-        // Start the capture.
-        try await newStream.startCapture()
-
+        // Retain BEFORE starting: if `startCapture()` suspends and the only
+        // reference is this local, an intervening deallocation kills the stream
+        // with no error reported.
         self.stream = newStream
-        self.isRunning = true
 
-        // Update UI state on the main actor.
-        await MainActor.run {
-            appState.targetWindowID = window.windowID
-            appState.isStreaming = true
-            appState.isPaused = false
+        do {
+            try await newStream.startCapture()
+        } catch {
+            Log.capture.error("SCStream.startCapture failed — \(Permissions.describe(error), privacy: .public)")
+            self.stream = nil
+            self.streamConfiguration = nil
+            throw error
         }
 
-        // Begin monitoring the window on-screen state periodically (checks for minimized/hidden)
-        Task { [weak self] in
-            while true {
-                try? await Task.sleep(nanoseconds: 500_000_000) // 0.5s
-                guard let self = self, self.isRunning else { break }
-                await self.checkWindowState()
+        self.isRunning = true
+        withRenderingLock {
+            lastFrameTime = CFAbsoluteTimeGetCurrent()
+            receivedFrameCount = 0
+            isProcessingFrame = false
+            lastSurface = nil
+        }
+
+        Log.capture.info("SCStream started successfully")
+
+        await MainActor.run {
+            appState.captureSize = crop.size
+            appState.isStreaming = true
+            appState.isPaused = false
+            if case let .window(window, _) = target {
+                appState.sourceAppPID = window.owningApplication?.processID
             }
         }
 
-        // Begin monitoring workspace notification backups.
         setupWorkspaceMonitoring()
     }
 
-    /// Check if the target window is currently visible on screen.
-    /// If it is minimized or hidden, it won't appear in onScreenWindowsOnly.
-    private func checkWindowState() async {
-        guard let appState = appState,
-              let targetWindowID = appState.targetWindowID else { return }
-        do {
-            let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
-            let isOnScreen = content.windows.contains { $0.windowID == targetWindowID }
-            
-            await MainActor.run {
-                if appState.isPaused != !isOnScreen {
-                    appState.isPaused = !isOnScreen
-                }
-            }
-        } catch {
-            print("[CaptureEngine] Error checking window state: \(error.localizedDescription)")
-        }
+    // MARK: - Target resolution
+
+    /// What the stream is filtered to.
+    enum CaptureTarget {
+        /// A specific window, with the crop in the window filter's own
+        /// content-rect space. Tracks the window as it moves.
+        case window(SCWindow, crop: CGRect)
+        /// A whole display, with the crop in display-relative top-left points.
+        case display(SCDisplay, crop: CGRect)
     }
 
-    /// Stop the current capture session and clean up all resources.
+    /// Chooses between window-relative and display capture for a selection.
+    private func resolveTarget(for selection: Selection) async throws -> CaptureTarget {
+        // Window geometry from ScreenCaptureKit and Core Graphics is top-left
+        // origin; the selection arrives bottom-left. Convert once, here.
+        let cgRect = Self.cgGlobalRect(from: selection.rect)
+
+        if let window = try? await ScreenPicker.window(at: CGPoint(x: cgRect.midX, y: cgRect.midY)) {
+            let windowFrame = window.frame
+            let intersection = cgRect.intersection(windowFrame)
+
+            // Require the window to cover essentially all of the selection. A
+            // selection that straddles two apps, or spills onto the desktop, is
+            // better served by display capture than by silently cropping.
+            let selectionArea = cgRect.width * cgRect.height
+            let covered = intersection.isNull ? 0 : (intersection.width * intersection.height)
+
+            if selectionArea > 0, covered / selectionArea >= 0.9 {
+                let filter = SCContentFilter(desktopIndependentWindow: window)
+                let contentRect = filter.contentRect
+
+                // Offset within the window, rebased onto the filter's content
+                // rect — the space `sourceRect` is measured in, which is NOT
+                // the window's global frame.
+                var crop = CGRect(
+                    x: contentRect.minX + (intersection.minX - windowFrame.minX),
+                    y: contentRect.minY + (intersection.minY - windowFrame.minY),
+                    width: intersection.width,
+                    height: intersection.height
+                )
+                crop = crop.intersection(contentRect)
+
+                if !crop.isNull, crop.width >= 2, crop.height >= 2 {
+                    return .window(window, crop: crop)
+                }
+                Log.capture.debug("Window crop degenerate — falling back to display capture")
+            } else {
+                let pct = Int((covered / max(selectionArea, 1)) * 100)
+                Log.capture.debug("Selection only \(pct, privacy: .public)% inside the window — using display capture")
+            }
+        }
+
+        guard let display = try await ScreenPicker.display(for: selection.screen) else {
+            Log.capture.error("Could not resolve an SCDisplay for the selection's screen")
+            throw CaptureError.noTarget
+        }
+        return .display(display, crop: Self.sourceRect(forSelection: selection.rect, on: selection.screen))
+    }
+
+    /// Converts a Cocoa global rect (bottom-left origin, primary display) into
+    /// the Core Graphics global space (top-left origin) that `SCWindow.frame`
+    /// and `CGWindowListCopyWindowInfo` both use.
+    private static func cgGlobalRect(from cocoaRect: CGRect) -> CGRect {
+        guard let primary = NSScreen.screens.first else { return cocoaRect }
+        return CGRect(
+            x: cocoaRect.minX,
+            y: primary.frame.maxY - cocoaRect.maxY,
+            width: cocoaRect.width,
+            height: cocoaRect.height
+        )
+    }
+
+    /// Stop the current capture session and release the stream.
     ///
-    /// Safe to call even if no stream is running.
+    /// Safe to call when nothing is running. Releasing `stream` is what
+    /// actually clears the purple screen-recording indicator — a retained but
+    /// stopped `SCStream` keeps the session alive as far as the system is
+    /// concerned.
     func stopCapture() async {
-        // Remove workspace observers first so they don't fire during
-        // teardown.
+        guard stream != nil || isRunning else { return }
+
+        Log.capture.info("stopCapture")
+
         for observer in workspaceObservers {
             NSWorkspace.shared.notificationCenter.removeObserver(observer)
         }
         workspaceObservers.removeAll()
 
-        // Tear down the SCStream.
-        if let stream = stream {
+        if let stream {
             do {
                 try await stream.stopCapture()
             } catch {
-                print("[CaptureEngine] Error stopping capture: \(error.localizedDescription)")
+                // -3808 ("stream already stopped") is expected when the system
+                // tore it down first; it is not a failure to report.
+                Log.capture.debug("stopCapture: \(Permissions.describe(error), privacy: .public)")
             }
         }
 
         self.stream = nil
         self.streamConfiguration = nil
         self.isRunning = false
+        withRenderingLock { lastSurface = nil }
 
-        // Reset UI state on the main actor.
         await MainActor.run {
             appState?.isStreaming = false
             appState?.isPaused = false
         }
     }
 
+    /// Rebuild the content filter so it excludes Glance's own windows.
+    ///
+    /// Called once the PiP panel exists: at `startCapture` time the panel has
+    /// not been created yet, so it cannot be in the exclusion list, and without
+    /// this second pass a PiP placed over the captured region mirrors itself.
+    func refreshExcludedWindows() async {
+        // Window-mode filters capture a single window and cannot include the PiP
+        // panel, so there is nothing to exclude.
+        guard let stream, let display = captureDisplay else { return }
+
+        let excluded = (try? await ScreenPicker.glanceWindows()) ?? []
+        guard excluded.count != excludedWindowCount else { return }
+        excludedWindowCount = excluded.count
+
+        let filter = SCContentFilter(display: display, excludingWindows: excluded)
+        do {
+            try await stream.updateContentFilter(filter)
+            Log.capture.info("Content filter refreshed — excluding \(excluded.count, privacy: .public) Glance window(s)")
+        } catch {
+            Log.capture.error("updateContentFilter failed: \(Permissions.describe(error), privacy: .public)")
+        }
+    }
+
     /// Update the captured sub-region on a **live** stream.
     ///
-    /// Call this when the source window moves or resizes so the PiP
-    /// continues to track the correct area. The update is applied
-    /// atomically by ScreenCaptureKit; there is no visible glitch.
-    ///
-    /// - Parameter rect: The new source rectangle in display points.
-    /// - Throws: If the configuration update fails.
+    /// - Parameter rect: The new region in Cocoa global coordinates.
     func updateSourceRect(_ rect: CGRect) async throws {
-        guard let stream = stream,
-              let config = streamConfiguration else {
-            return
-        }
+        guard let stream, let config = streamConfiguration, let screen = captureScreen else { return }
 
-        // Mutate the existing configuration and re-apply it.
-        // ScreenCaptureKit handles the transition seamlessly.
-        config.sourceRect = rect
+        let crop = Self.sourceRect(forSelection: rect, on: screen)
+        guard crop.width >= 2, crop.height >= 2 else { return }
 
-        // Recalculate output dimensions so they continue to match
-        // the sourceRect exactly (no scaling).
-        if appState != nil,
-           let display = try await ScreenPicker.display(for: rect) {
-            let scale = Self.scaleFactor(for: display)
-            config.width = Int(rect.width * scale)
-            config.height = Int(rect.height * scale)
-        }
+        selectionRect = rect
+        config.sourceRect = crop
+        config.width = Self.evenPixels(crop.width * pointPixelScale)
+        config.height = Self.evenPixels(crop.height * pointPixelScale)
+
+        guard config.width > 0, config.height > 0 else { return }
 
         try await stream.updateConfiguration(config)
+        Log.capture.debug("updateSourceRect -> \(NSStringFromRect(crop), privacy: .public)")
     }
-    // MARK: - Scale Factor Utility
 
-    /// SCDisplay does not expose a `scaleFactor` property directly.
-    /// We find the matching NSScreen and use its `backingScaleFactor`.
-    /// Falls back to 2.0 (Retina) if no match is found.
-    private static func scaleFactor(for display: SCDisplay) -> CGFloat {
-        let displayFrame = CGRect(
-            x: CGFloat(display.frame.origin.x),
-            y: CGFloat(display.frame.origin.y),
-            width: CGFloat(display.frame.width),
-            height: CGFloat(display.frame.height)
+    // MARK: - Geometry helpers
+
+    /// Converts a Cocoa global rect into ScreenCaptureKit's `sourceRect` space.
+    ///
+    /// Cocoa's global space has its origin at the bottom-left of the *primary*
+    /// display with Y growing upward. `sourceRect` is measured from the
+    /// **top-left of the captured display** with Y growing downward. Both the
+    /// origin shift and the flip are therefore relative to `screen.frame`:
+    ///
+    /// ```
+    ///   x = selection.minX - screen.frame.minX
+    ///   y = screen.frame.maxY - selection.maxY
+    /// ```
+    ///
+    /// Using the primary screen's height for the flip (as the selection overlay
+    /// previously did) only works when the target display *is* the primary one
+    /// and its origin is exactly zero.
+    private static func sourceRect(forSelection selection: CGRect, on screen: NSScreen) -> CGRect {
+        let frame = screen.frame
+
+        var crop = CGRect(
+            x: selection.minX - frame.minX,
+            y: frame.maxY - selection.maxY,
+            width: selection.width,
+            height: selection.height
         )
-        for screen in NSScreen.screens {
-            if screen.frame.origin == displayFrame.origin
-                && screen.frame.size == displayFrame.size {
-                return screen.backingScaleFactor
-            }
-        }
-        return 2.0  // Default to Retina
+
+        // Clamp into the display. An out-of-bounds sourceRect is not an error to
+        // SCK — it just yields black.
+        let bounds = CGRect(origin: .zero, size: frame.size)
+        crop = crop.intersection(bounds)
+        return crop.isNull ? .zero : crop
+    }
+
+    /// SCK requires even output dimensions.
+    private static func evenPixels(_ value: CGFloat) -> Int {
+        let rounded = Int(value.rounded())
+        return max(0, rounded - (rounded % 2))
     }
 
     // MARK: - Workspace Monitoring
 
-
-    /// Observe workspace notifications to detect when the source app is
-    /// hidden or minimised. This lets the UI show a "paused" state
-    /// instead of rendering stale or black frames.
+    /// Observe workspace notifications to detect when the source app is hidden,
+    /// unhidden or terminated.
     private func setupWorkspaceMonitoring() {
         let nc = NSWorkspace.shared.notificationCenter
 
-        // --- App hidden ---------------------------------------------------
         let hideObserver = nc.addObserver(
             forName: NSWorkspace.didHideApplicationNotification,
             object: nil,
             queue: .main
         ) { [weak self] notification in
-            guard let self = self else { return }
-            guard let app = notification.userInfo?[NSWorkspace.applicationUserInfoKey]
-                    as? NSRunningApplication,
-                  app.processIdentifier == self.appState?.sourceAppPID
-            else { return }
-
+            guard let self, self.matchesSourceApp(notification) else { return }
+            Log.capture.info("Source app hidden — pausing")
             self.appState?.isPaused = true
         }
         workspaceObservers.append(hideObserver)
 
-        // --- App unhidden -------------------------------------------------
         let unhideObserver = nc.addObserver(
             forName: NSWorkspace.didUnhideApplicationNotification,
             object: nil,
             queue: .main
         ) { [weak self] notification in
-            guard let self = self else { return }
-            guard let app = notification.userInfo?[NSWorkspace.applicationUserInfoKey]
-                    as? NSRunningApplication,
-                  app.processIdentifier == self.appState?.sourceAppPID
-            else { return }
-
+            guard let self, self.matchesSourceApp(notification) else { return }
+            Log.capture.info("Source app unhidden — resuming")
             self.appState?.isPaused = false
         }
         workspaceObservers.append(unhideObserver)
 
-        // --- App terminated -----------------------------------------------
-        // If the source app quits entirely, stop the capture session.
         let terminateObserver = nc.addObserver(
             forName: NSWorkspace.didTerminateApplicationNotification,
             object: nil,
             queue: .main
         ) { [weak self] notification in
-            guard let self = self else { return }
-            guard let app = notification.userInfo?[NSWorkspace.applicationUserInfoKey]
-                    as? NSRunningApplication,
-                  app.processIdentifier == self.appState?.sourceAppPID
-            else { return }
-
-            // The source app is gone — tear down asynchronously.
-            Task { [weak self] in
-                await self?.stopCapture()
-            }
+            guard let self, self.matchesSourceApp(notification) else { return }
+            Log.capture.info("Source app terminated — stopping capture")
+            Task { [weak self] in await self?.stopCapture() }
         }
         workspaceObservers.append(terminateObserver)
     }
+
+    private func matchesSourceApp(_ notification: Notification) -> Bool {
+        guard let app = notification.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication
+        else { return false }
+        return app.processIdentifier == appState?.sourceAppPID
+    }
 }
+
+// MARK: - CaptureError
+
+enum CaptureError: LocalizedError {
+    case permissionDenied
+    case invalidGeometry
+    case noTarget
+
+    var errorDescription: String? {
+        switch self {
+        case .permissionDenied:
+            return "Screen Recording permission is not granted. Enable Glance in "
+                 + "System Settings → Privacy & Security → Screen Recording, then relaunch."
+        case .invalidGeometry:
+            return "The selected region produced an empty capture rectangle."
+        case .noTarget:
+            return "Could not find a window or display to capture under the selection."
+        }
+    }
+}
+
+// MARK: - SCStreamOutput
 
 extension CaptureEngine: SCStreamOutput {
 
-    /// Called by ScreenCaptureKit on `captureQueue` each time a new frame
-    /// is ready.
+    /// Called by ScreenCaptureKit on `captureQueue` for each new frame.
     ///
-    /// We implement a frame-dropping pipeline to ensure zero latency and
-    /// prevent scheduling lag. If a new frame arrives while the previous
-    /// frame is still rendering on the GPU, we drop the new frame.
+    /// Frames are dropped while a previous one is still being presented, so a
+    /// slow compositor cannot build an unbounded backlog on the main queue.
     func stream(
         _ stream: SCStream,
         didOutputSampleBuffer sampleBuffer: CMSampleBuffer,
         of type: SCStreamOutputType
     ) {
-        // We only care about screen content, not audio.
         guard type == .screen else { return }
-
-        // Check the sample buffer status — ScreenCaptureKit can send
-        // status-only buffers (e.g. idle/blank notifications).
         guard sampleBuffer.isValid else { return }
 
-        // Retrieve the backing CVPixelBuffer.
+        // SCK emits status-only buffers (idle, blank, suspended) with no image
+        // buffer. Treating those as frames is harmless, but distinguishing them
+        // in the log is the difference between "the stream is dead" and "the
+        // window simply isn't redrawing".
+        // SCK marks every buffer with a frame status. Only `.complete` carries
+        // new pixels; `.idle` means "nothing changed, keep showing the last
+        // frame", and `.blank`/`.suspended` carry no image at all. Treating
+        // those as errors is what filled the log with "status-only frame" once
+        // per second on a static window.
+        if let attachments = CMSampleBufferGetSampleAttachmentsArray(sampleBuffer, createIfNecessary: false)
+            as? [[SCStreamFrameInfo: Any]],
+           let statusValue = attachments.first?[.status] as? Int,
+           let status = SCFrameStatus(rawValue: statusValue),
+           status != .complete {
+            if status != .idle {
+                logSparse("Frame status \(status.rawValue) (not .complete) — no pixels this cycle")
+            }
+            return
+        }
+
         guard let pixelBuffer = sampleBuffer.imageBuffer else { return }
 
-        // Drop frame if the main thread/GPU is still processing the previous one.
         renderingLock.lock()
+        receivedFrameCount &+= 1
+        lastFrameTime = CFAbsoluteTimeGetCurrent()
+        let count = receivedFrameCount
         if isProcessingFrame {
             renderingLock.unlock()
-            return // Drop frame
+            return
         }
         isProcessingFrame = true
         renderingLock.unlock()
 
-        // Extract the IOSurface — this is a zero-copy handle to the same
-        // GPU memory that the WindowServer wrote into.
+        if count == 1 {
+            Log.capture.info("First sample buffer received: \(CVPixelBufferGetWidth(pixelBuffer), privacy: .public)x\(CVPixelBufferGetHeight(pixelBuffer), privacy: .public)")
+        }
+
+        // Zero-copy handle to the WindowServer's own GPU memory.
+        // `takeUnretainedValue()` (not `unsafeBitCast`) is what gives ARC a
+        // properly managed reference — the previous bitcast produced an
+        // unretained object that could be recycled by SCK mid-frame.
         guard let surfaceRef = CVPixelBufferGetIOSurface(pixelBuffer) else {
+            Log.capture.error("CVPixelBufferGetIOSurface returned nil — frame cannot be presented")
             renderingLock.lock()
             isProcessingFrame = false
             renderingLock.unlock()
             return
         }
-        let surface = unsafeBitCast(surfaceRef, to: IOSurface.self)
+        let surface = surfaceRef.takeUnretainedValue() as IOSurface
+        withRenderingLock { lastSurface = surface }
 
-        // Dispatch frame directly to the main thread for rendering.
-        // We do NOT modify any @Observable properties here to avoid triggering
-        // expensive SwiftUI view body re-evaluations.
         DispatchQueue.main.async { [weak self] in
-            guard let self = self else { return }
-            
+            guard let self else { return }
             defer {
                 self.renderingLock.lock()
                 self.isProcessingFrame = false
                 self.renderingLock.unlock()
             }
-            
-            // Keep AppState currentFrame updated for completeness
+
             self.appState?.currentFrame = surface
-            
-            // Render directly onto the CAMetalLayer bypassing SwiftUI
-            self.onFrameReceived?(pixelBuffer)
+            // A nil renderer here is normal for the first frames; the surface is
+            // buffered above and replayed by `attachRenderer(_:)`.
+            self.onFrameReceived?(surface)
         }
+    }
+
+    /// Emits at most one message per second so a per-frame condition doesn't
+    /// flood the log at 60 Hz.
+    private func logSparse(_ message: String) {
+        struct Throttle { static var last: CFAbsoluteTime = 0 }
+        let now = CFAbsoluteTimeGetCurrent()
+        guard now - Throttle.last > 1.0 else { return }
+        Throttle.last = now
+        Log.capture.debug("\(message, privacy: .public)")
     }
 }
 
@@ -461,20 +665,19 @@ extension CaptureEngine: SCStreamOutput {
 
 extension CaptureEngine: SCStreamDelegate {
 
-    /// Called when the stream terminates unexpectedly (e.g. the display
-    /// is disconnected, or ScreenCaptureKit encounters an internal error).
+    /// Called when the stream terminates unexpectedly.
     func stream(_ stream: SCStream, didStopWithError error: Error) {
-        print("[CaptureEngine] Stream stopped with error: \(error.localizedDescription)")
+        let description = Permissions.describe(error)
+        Log.capture.error("Stream stopped with error — \(description, privacy: .public)")
 
         DispatchQueue.main.async { [weak self] in
-            guard let self = self else { return }
+            guard let self else { return }
             self.isRunning = false
             self.appState?.isStreaming = false
             self.appState?.isPaused = true
-            self.appState?.errorMessage = error.localizedDescription
+            self.appState?.errorMessage = description
         }
 
-        // Clean up workspace observers since the stream is dead.
         for observer in workspaceObservers {
             NSWorkspace.shared.notificationCenter.removeObserver(observer)
         }

@@ -20,7 +20,8 @@ DerivedData/
 Pods/
 Carthage/Build/
 .build/
-Package.resolved
+# Package.resolved IS committed: it pins the exact SPM dependency versions this
+# app was built and tested against.
 
 # macOS
 .DS_Store
@@ -36,6 +37,9 @@ Package.resolved
 *~
 .idea/
 .vscode/
+
+# Icon generator intermediates
+Tools/.iconbuild/
 
 # Misc
 *.log

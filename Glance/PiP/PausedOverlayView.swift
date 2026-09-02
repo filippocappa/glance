@@ -23,7 +23,7 @@ struct PausedOverlayView: View {
             // Full-area blur that obscures the frozen video frame underneath.
             // `.fullScreenUI` is a heavy, dark material that signals "modal state"
             // to the user. `.behindWindow` blurs content from windows below.
-            VisualEffectBlur(material: .fullScreenUI, blendingMode: .behindWindow)
+            VisualEffectBlur(material: .fullScreenUI, blendingMode: .withinWindow)
             
             VStack(spacing: 12) {
                 // Pause icon — large but thin-weighted to stay elegant

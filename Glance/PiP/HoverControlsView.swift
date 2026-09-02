@@ -1,28 +1,28 @@
 import SwiftUI
+import KeyboardShortcuts
 
 // MARK: - HoverControlsView
 // ─────────────────────────────────────────────────────────────────────────────
-// The top layer in Glance's two-layer Ghost Mode architecture.
+// The control bar that fades in over the video when the cursor is inside the
+// PiP panel.
 //
-// Architecture Overview:
-// ┌─────────────────────────────────────────┐
-// │  Controls Child Window (intercepts mouse)│  ← THIS VIEW lives here
-// ├─────────────────────────────────────────┤
-// │  Video Panel (ignoresMouseEvents = true) │  ← VideoLayerView (click-through)
-// └─────────────────────────────────────────┘
+// Glance is a SINGLE-window app: this bar is a SwiftUI layer inside the same
+// NSPanel as the video, not a separate child window. (It used to live in a
+// child window above a click-through video panel; that two-window "ghost mode"
+// was removed because keeping the two frames in sync during a drag produced
+// visible ghosting.)
 //
-// Unlike the video layer below, this view DOES intercept mouse events so the
-// user can interact with close/settings buttons. It lives in a separate child
-// NSWindow that sits above the main video panel.
+// Controls, left to right:
+//   ×   Close       — stops the capture and closes the PiP.
+//   ⧉   Show source — activates the app that owns the captured window, bringing
+//                     the real window forward. It does NOT toggle click-through
+//                     and does NOT change the capture.
+//   ⚙︎  Size        — zoom presets (50%-200%) that resize the PiP panel only;
+//                     the stream keeps running at its source resolution.
 //
-// The controls are hidden by default and appear with a fade-in + slide-down
-// animation when the cursor enters the PiP window area. This keeps the PiP
-// window clean and unobtrusive during normal use.
-//
-// Controls provided:
-// - Close button (×): Closes the PiP window and stops capture
-// - Bring to front (⧉): Activates the source application
-// - Zoom menu (⚙): Quick access to common zoom levels (50%–200%)
+// Click-through ("ghost mode") is automatic and has no button: the panel passes
+// clicks through whenever the cursor is outside it, and becomes interactive on
+// hover. See GlanceWindowController.
 // ─────────────────────────────────────────────────────────────────────────────
 
 struct HoverControlsView: View {
@@ -32,6 +32,9 @@ struct HoverControlsView: View {
     /// Tracks whether the cursor is currently inside the PiP window bounds.
     /// Drives the show/hide animation for the controls bar.
     let isHovering: Bool
+
+    /// Whether Ghost Mode is engaged, so the button can render its active state.
+    let isGhostMode: Bool
     
     // MARK: - Callbacks & Bindings
     
@@ -40,6 +43,9 @@ struct HoverControlsView: View {
     
     /// Called when the user clicks the "bring to front" button.
     var onBringToFront: () -> Void
+
+    /// Called when the user toggles Ghost Mode.
+    var onToggleGhostMode: () -> Void
     
     /// Two-way binding to the current zoom level in AppState.
     /// The zoom menu sets this value; the window controller reads it to
@@ -65,12 +71,15 @@ struct HoverControlsView: View {
                                 .shadow(color: .black.opacity(0.5), radius: 2)
                         }
                         .buttonStyle(.plain)
-                        .help("Close Glance")
+                        .help("Close — stop capturing and close this PiP")
+                        .accessibilityLabel("Close Glance")
                         
                         Spacer()
                         
-                        // Bring source window to front — useful when the user
-                        // wants to interact with the source app directly
+                        // Activates the source application so its real window
+                        // comes forward. Purely a convenience — it does not
+                        // affect the stream, and it is NOT a click-through
+                        // toggle (click-through is automatic on hover).
                         Button(action: onBringToFront) {
                             Image(systemName: "macwindow.on.rectangle")
                                 .font(.system(size: 14))
@@ -78,12 +87,31 @@ struct HoverControlsView: View {
                                 .shadow(color: .black.opacity(0.5), radius: 2)
                         }
                         .buttonStyle(.plain)
-                        .help("Bring source window to front")
+                        .help("Show source — bring the original window to the front")
+                        .accessibilityLabel("Bring source window to front")
+
+                        // Ghost Mode — dim the PiP and let clicks pass straight
+                        // through to whatever is behind it.
+                        Button(action: onToggleGhostMode) {
+                            Image(systemName: isGhostMode
+                                  ? "cursorarrow.slash.square.fill"
+                                  : "cursorarrow.slash")
+                                .font(.system(size: 14))
+                                .foregroundStyle(isGhostMode
+                                                 ? AnyShapeStyle(Color.accentColor)
+                                                 : AnyShapeStyle(.white.opacity(0.9)))
+                                .shadow(color: .black.opacity(0.5), radius: 2)
+                        }
+                        .buttonStyle(.plain)
+                        .help("Ghost Mode — dim the PiP and click through it (\(Self.ghostShortcutLabel))")
+                        .accessibilityLabel("Toggle Ghost Mode")
                         
                         // Zoom level menu — provides quick preset zoom values.
                         // Using a Menu instead of a Picker for cleaner styling
                         // and because we want specific percentage labels.
                         Menu {
+                            Text("PiP window size")
+                            Divider()
                             Button("50%") { zoomLevel.wrappedValue = 0.5 }
                             Button("75%") { zoomLevel.wrappedValue = 0.75 }
                             Button("100%") { zoomLevel.wrappedValue = 1.0 }
@@ -97,14 +125,15 @@ struct HoverControlsView: View {
                         }
                         .menuStyle(.borderlessButton)
                         .fixedSize()
-                        .help("Settings")
+                        .help("Size — scale this PiP window (the capture is unchanged)")
+                        .accessibilityLabel("PiP size")
                     }
                     .padding(.horizontal, 12)
                     .padding(.vertical, 8)
                     .background(
                         // Vibrancy blur that samples the content behind the window,
                         // giving the controls bar a native macOS "HUD" appearance
-                        VisualEffectBlur(material: .hudWindow, blendingMode: .behindWindow)
+                        VisualEffectBlur(material: .hudWindow, blendingMode: .withinWindow)
                             .clipShape(RoundedRectangle(cornerRadius: 8))
                     )
                     .padding(8)
@@ -115,6 +144,46 @@ struct HoverControlsView: View {
                 .transition(.opacity.combined(with: .move(edge: .top)))
             }
         }
+    }
+}
+
+// MARK: - Shortcut label
+
+extension HoverControlsView {
+    /// Human-readable form of the current Ghost Mode hotkey, for the tooltip.
+    static var ghostShortcutLabel: String {
+        KeyboardShortcuts.getShortcut(for: .toggleGhostMode)
+            .map(String.init(describing:)) ?? "no shortcut set"
+    }
+}
+
+// MARK: - GhostExitBadge
+// ─────────────────────────────────────────────────────────────────────────────
+// The one clickable target while Ghost Mode is engaged.
+//
+// The panel ignores mouse events everywhere else, so without this the only ways
+// out would be the global hotkey and the menu bar. The window controller keeps
+// a matching hit rect in sync (see GlanceWindowController.updateGhostHitTesting).
+// ─────────────────────────────────────────────────────────────────────────────
+
+struct GhostExitBadge: View {
+    var action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: "cursorarrow.slash.square.fill")
+                .font(.system(size: 16))
+                .foregroundStyle(.white)
+                .frame(width: 34, height: 34)
+                .background(
+                    Circle()
+                        .fill(.black.opacity(0.55))
+                        .overlay(Circle().strokeBorder(.white.opacity(0.25), lineWidth: 1))
+                )
+        }
+        .buttonStyle(.plain)
+        .help("Leave Ghost Mode (\(HoverControlsView.ghostShortcutLabel))")
+        .accessibilityLabel("Leave Ghost Mode")
     }
 }
 

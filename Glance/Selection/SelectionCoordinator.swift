@@ -21,9 +21,9 @@ import AppKit
 /// ## Usage
 /// ```swift
 /// let coordinator = SelectionCoordinator()
-/// coordinator.beginSelection { rect in
-///     if let rect {
-///         print("Selected region: \(rect)")
+/// coordinator.beginSelection { selection in
+///     if let selection {
+///         print("Selected region: \(selection.rect) on \(selection.screen)")
 ///     } else {
 ///         print("Selection cancelled")
 ///     }
@@ -43,8 +43,12 @@ final class SelectionCoordinator {
     private var overlayWindows: [NSWindow] = []
 
     /// The completion handler supplied by the caller of `beginSelection`.
-    /// Called exactly once with either a valid `CGRect` or `nil` (cancelled).
-    private var completion: ((CGRect?) -> Void)?
+    /// Called exactly once with either a valid selection or `nil` (cancelled).
+    private var completion: ((Selection?) -> Void)?
+
+    /// True while overlays are on screen. Guards against a second selection
+    /// session stacking overlays on top of the first.
+    private var isActive: Bool { !overlayWindows.isEmpty }
 
     // MARK: - Public API
 
@@ -60,7 +64,15 @@ final class SelectionCoordinator {
     ///
     /// - Parameter completion: Called on the main actor with the selected rect
     ///   or `nil` if the user cancelled.
-    func beginSelection(completion: @escaping (CGRect?) -> Void) {
+    func beginSelection(completion: @escaping (Selection?) -> Void) {
+        // Single-instance guard: re-entering selection while overlays are up
+        // would leave the first set orphaned on screen forever.
+        guard !isActive else {
+            Log.selection.error("beginSelection called while a session is already active — ignoring")
+            completion(nil)
+            return
+        }
+
         self.completion = completion
 
         // Create an overlay window for each connected display.
@@ -130,8 +142,8 @@ final class SelectionCoordinator {
 
         // Wire up the overlay's callbacks to this coordinator's
         // finish/cancel methods. Weak self prevents retain cycles.
-        overlayView.onSelectionComplete = { [weak self] rect in
-            self?.finishSelection(with: rect)
+        overlayView.onSelectionComplete = { [weak self] rect, selectedScreen in
+            self?.finishSelection(with: Selection(rect: rect, screen: selectedScreen))
         }
         overlayView.onSelectionCancelled = { [weak self] in
             self?.cancelSelection()
@@ -153,11 +165,11 @@ final class SelectionCoordinator {
     /// Dismisses all overlay windows and calls the completion handler
     /// with the selected region.
     ///
-    /// - Parameter rect: The selected rectangle in screen coordinates
-    ///   with a top-left origin, suitable for ScreenCaptureKit.
-    private func finishSelection(with rect: CGRect) {
+    /// - Parameter selection: The selected rectangle in Cocoa global
+    ///   coordinates, together with the screen it was drawn on.
+    private func finishSelection(with selection: Selection) {
         dismissOverlays()
-        completion?(rect)
+        completion?(selection)
         completion = nil
     }
 
@@ -187,4 +199,17 @@ final class SelectionCoordinator {
         }
         overlayWindows.removeAll()
     }
+}
+
+
+// MARK: - Selection
+
+/// A completed region selection.
+///
+/// `rect` is in Cocoa global coordinates (bottom-left origin) and `screen` is
+/// the display it was drawn on. Both are needed to build a correct
+/// ScreenCaptureKit `sourceRect`, which is top-left and display-relative.
+struct Selection {
+    let rect: CGRect
+    let screen: NSScreen
 }

@@ -1,220 +1,269 @@
 // GlanceApp.swift
 // Glance — Universal Picture-in-Picture for macOS
 //
-// The main entry point for the Glance app.
-// This is a menu bar agent app (LSUIElement = YES) that does not appear in the Dock.
-// It uses SwiftUI's MenuBarExtra for the status item and orchestrates
-// the selection → capture → PiP window pipeline.
+// Menu bar agent app (LSUIElement = YES). MenuBarExtra provides the status
+// item; GlanceCoordinator owns every piece of long-lived state.
+//
+// The coordinator exists because global hotkeys must be registered exactly
+// once, for the lifetime of the process. Registering them from a SwiftUI
+// `App`'s initializer is not possible (its `@State` is not yet available), and
+// registering from menu content would re-register every time the menu opens.
 
 import SwiftUI
-import ScreenCaptureKit
+import AppKit
+import KeyboardShortcuts
+import LaunchAtLogin
+
+// MARK: - GlanceCoordinator
+
+/// Owns the app's state, capture engine, and windows.
+@MainActor
+@Observable
+final class GlanceCoordinator {
+
+    let appState = AppState()
+    let captureEngine = CaptureEngine()
+
+    private let selectionCoordinator = SelectionCoordinator()
+    private let splashController = SplashWindowController()
+
+    /// The active PiP window controller, or `nil` when nothing is being shown.
+    private(set) var windowController: GlanceWindowController?
+
+    /// Last known Screen Recording status, for the menu.
+    var hasPermission: Bool = Permissions.hasScreenRecordingAccess()
+
+    init() {
+        Log.installCrashDiagnostics()
+        registerGlobalShortcuts()
+
+        // First-run onboarding. This has to be deferred by one run-loop turn:
+        // `@State` initialisers run while the App value is being built, before
+        // NSApplication has finished launching, and ordering a window in at
+        // that point does nothing.
+        //
+        // An NSApplicationDelegateAdaptor was tried first and does not work
+        // here — the only place to wire the delegate up is the MenuBarExtra's
+        // content `.onAppear`, which does not run until the user actually opens
+        // the menu, by which time applicationDidFinishLaunching is long gone.
+        DispatchQueue.main.async { [weak self] in
+            self?.splashController.showIfFirstRun()
+        }
+    }
+
+    // MARK: Global shortcuts
+
+    private func registerGlobalShortcuts() {
+        KeyboardShortcuts.onKeyUp(for: .newCapture) { [weak self] in
+            self?.startNewGlance()
+        }
+        KeyboardShortcuts.onKeyUp(for: .toggleGhostMode) { [weak self] in
+            self?.toggleGhostMode()
+        }
+        Log.window.info("Global shortcuts registered")
+    }
+
+    // MARK: Capture lifecycle
+
+    /// Check permission → select a region → start capture → show the PiP.
+    func startNewGlance() {
+        guard Permissions.ensureScreenRecordingAccess() else {
+            hasPermission = false
+            appState.errorMessage = "Screen Recording permission required. Grant it, then relaunch Glance."
+            showSettings()
+            return
+        }
+        hasPermission = true
+
+        // Single-instance: tear down any existing PiP before selecting again.
+        stopGlance()
+
+        appState.errorMessage = nil
+        appState.isSelecting = true
+        Log.selection.info("Entering selection mode")
+
+        selectionCoordinator.beginSelection { [weak self] selection in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                self.appState.isSelecting = false
+
+                guard let selection else {
+                    Log.selection.info("Selection cancelled")
+                    return
+                }
+                Log.selection.info("""
+                    Selected \(NSStringFromRect(selection.rect), privacy: .public) (cocoa) \
+                    on screen \(NSStringFromRect(selection.screen.frame), privacy: .public)
+                    """)
+
+                Task { await self.startCapture(selection: selection) }
+            }
+        }
+    }
+
+    private func startCapture(selection: Selection) async {
+        do {
+            appState.sourceRect = selection.rect
+
+            // CaptureEngine picks window-relative or display capture itself and
+            // reports the crop it settled on via `appState.captureSize`.
+            try await captureEngine.startCapture(selection: selection, appState: appState)
+
+            // Size the PiP from the ACTUAL crop, not the raw selection: in
+            // window mode the crop is clamped to the window's content rect, so
+            // using the selection would give the panel the wrong aspect ratio.
+            let capture = appState.captureSize
+            guard capture.width > 0, capture.height > 0 else {
+                appState.errorMessage = "Capture produced an empty region"
+                await captureEngine.stopCapture()
+                return
+            }
+
+            let pipSize = GlanceWindowController.initialPanelSize(for: capture)
+            let screen = selection.screen
+            let position = CGPoint(
+                x: screen.visibleFrame.maxX - pipSize.width - SnapEngine.margin,
+                y: screen.visibleFrame.minY + SnapEngine.margin
+            )
+
+            appState.windowSize = pipSize
+            appState.windowPosition = position
+
+            let controller = GlanceWindowController(
+                appState: appState,
+                captureEngine: captureEngine
+            )
+            controller.show(size: pipSize, position: position)
+            windowController = controller
+
+        } catch {
+            let message = Permissions.describe(error)
+            Log.capture.error("Failed to start capture — \(message, privacy: .public)")
+            appState.errorMessage = message
+            await captureEngine.stopCapture()
+        }
+    }
+
+    /// Stop the current session and release everything it held.
+    func stopGlance() {
+        windowController?.close()
+        windowController = nil
+    }
+
+    /// Flip Ghost Mode on the active PiP. No-op when nothing is showing.
+    func toggleGhostMode() {
+        guard let windowController else {
+            Log.window.debug("Ghost Mode hotkey ignored — no active PiP")
+            return
+        }
+        windowController.toggleGhostMode()
+    }
+
+    // MARK: Settings
+
+    func showSettings() {
+        splashController.show()
+    }
+
+    func refreshPermission() {
+        hasPermission = Permissions.hasScreenRecordingAccess()
+    }
+}
 
 // MARK: - App Entry Point
 
 @main
 struct GlanceApp: App {
-    // Global state — analogous to a React Context provider wrapping the entire app.
-    // This single @State instance is the source of truth for all components.
-    @State private var appState = AppState()
-    
-    // The capture engine manages SCStream sessions
-    @State private var captureEngine = CaptureEngine()
-    
-    // Selection coordinator manages the overlay window lifecycle
-    @State private var selectionCoordinator = SelectionCoordinator()
-    
-    // The PiP window controller (created when capture starts)
-    @State private var windowController: GlanceWindowController?
-    
-    // Permission state
-    @State private var hasPermission: Bool? = nil
-    
+    @State private var coordinator = GlanceCoordinator()
+
     var body: some Scene {
-        // MenuBarExtra is the SwiftUI way to create a menu bar status item.
-        // This replaces the need for manual NSStatusItem setup.
         MenuBarExtra {
-            MenuBarView(
-                appState: appState,
-                hasPermission: hasPermission,
-                onNewGlance: { startNewGlance() },
-                onStopGlance: { stopGlance() },
-                onCheckPermission: { await checkPermission() },
-                onQuit: { NSApplication.shared.terminate(nil) }
-            )
+            MenuBarView(coordinator: coordinator)
+                .onAppear { coordinator.refreshPermission() }
         } label: {
-            // The menu bar icon — an SF Symbol representing PiP
-            Label("Glance", systemImage: "pip")
-                .labelStyle(.iconOnly)
+            // Template rendering makes AppKit tint the glyph for the current
+            // menu-bar appearance, instead of drawing a fixed-colour image.
+            Image(systemName: "pip.fill")
+                .renderingMode(.template)
         }
         .menuBarExtraStyle(.menu)
-    }
-    
-    // MARK: - Actions
-    
-    /// Start a new Glance session: check permissions → select region → start capture → show PiP
-    private func startNewGlance() {
-        Task { @MainActor in
-            // 1. Check permission
-            let permitted = await Permissions.checkScreenRecordingPermission()
-            hasPermission = permitted
-            
-            guard permitted else {
-                Permissions.openScreenRecordingSettings()
-                return
-            }
-            
-            // 2. Enter selection mode
-            appState.isSelecting = true
-            
-            selectionCoordinator.beginSelection { selectedRect in
-                appState.isSelecting = false
-                
-                guard let rect = selectedRect else {
-                    // User cancelled
-                    return
-                }
-                
-                // 3. Start capture
-                Task {
-                    await startCapture(sourceRect: rect)
-                }
-            }
-        }
-    }
-    
-    /// Start the ScreenCaptureKit stream and show the PiP window.
-    private func startCapture(sourceRect: CGRect) async {
-        do {
-            // Find the topmost window under the selection midpoint
-            let midPoint = CGPoint(x: sourceRect.midX, y: sourceRect.midY)
-            guard let window = try await ScreenPicker.window(at: midPoint) else {
-                appState.errorMessage = "Could not find a target window under the selected region"
-                return
-            }
-
-            appState.sourceRect = sourceRect
-            if let app = window.owningApplication {
-                appState.sourceAppPID = app.processID
-            }
-
-            // Start the capture engine with the target window
-            try await captureEngine.startCapture(
-                window: window,
-                sourceRect: sourceRect,
-                appState: appState
-            )
-            
-            // Calculate PiP window size (fit within 400px width, maintain aspect ratio)
-            let maxWidth: CGFloat = 400
-            let aspectRatio = sourceRect.width / sourceRect.height
-            let pipWidth = min(maxWidth, sourceRect.width)
-            let pipHeight = pipWidth / aspectRatio
-            let pipSize = CGSize(width: pipWidth, height: pipHeight)
-            
-            // Position in bottom-right corner initially
-            let screen = NSScreen.main ?? NSScreen.screens[0]
-            let initialPosition = CGPoint(
-                x: screen.visibleFrame.maxX - pipSize.width - SnapEngine.margin,
-                y: screen.visibleFrame.minY + SnapEngine.margin
-            )
-            
-            appState.windowSize = pipSize
-            appState.windowPosition = initialPosition
-            
-            // Create and show the PiP window
-            let controller = GlanceWindowController(
-                appState: appState,
-                captureEngine: captureEngine
-            )
-            controller.show(size: pipSize, position: initialPosition)
-            windowController = controller
-            
-        } catch {
-            appState.errorMessage = "Failed to start capture: \(error.localizedDescription)"
-        }
-    }
-    
-    /// Stop the current Glance session.
-    private func stopGlance() {
-        windowController?.close()
-        windowController = nil
-    }
-    
-    /// Check screen recording permission.
-    private func checkPermission() async {
-        hasPermission = await Permissions.checkScreenRecordingPermission()
     }
 }
 
 // MARK: - Menu Bar View
 
-/// The dropdown menu content for the menu bar status item.
-/// Analogous to a dropdown component in React.
+/// The status-item dropdown. Deliberately shallow: two actions, a Settings
+/// submenu, and Quit.
 struct MenuBarView: View {
-    let appState: AppState
-    let hasPermission: Bool?
-    let onNewGlance: () -> Void
-    let onStopGlance: () -> Void
-    let onCheckPermission: () async -> Void
-    let onQuit: () -> Void
-    
+    @Bindable var coordinator: GlanceCoordinator
+
     var body: some View {
         Group {
-            if appState.isStreaming {
-                // Active session controls
-                Button("Stop Glance") {
-                    onStopGlance()
-                }
-                .keyboardShortcut("w", modifiers: .command)
-                
-                Divider()
-                
-                Button("New Glance") {
-                    onStopGlance()
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
-                        onNewGlance()
-                    }
-                }
-                .keyboardShortcut("n", modifiers: .command)
-            } else {
-                // No active session
-                Button("New Glance") {
-                    onNewGlance()
-                }
-                .keyboardShortcut("n", modifiers: .command)
+            Button(menuTitle("New Capture", .newCapture)) {
+                coordinator.startNewGlance()
             }
-            
+
+            Button(ghostTitle) {
+                coordinator.toggleGhostMode()
+            }
+            .disabled(coordinator.windowController == nil)
+
+            if coordinator.appState.isStreaming {
+                Button("Stop Capture") { coordinator.stopGlance() }
+            }
+
             Divider()
-            
-            // Permission status
-            if let permitted = hasPermission {
-                if permitted {
-                    Label("Screen Recording: Allowed", systemImage: "checkmark.circle.fill")
-                        .disabled(true)
+
+            Menu("Settings") {
+                // KeyboardShortcuts.Recorder needs a real window (it captures
+                // key events), so shortcut editing lives in the splash rather
+                // than inline here.
+                Button("Shortcuts & Onboarding…") { coordinator.showSettings() }
+
+                Divider()
+
+                Button(LaunchAtLogin.isEnabled
+                       ? "✓ Launch at Login"
+                       : "Launch at Login") {
+                    LaunchAtLogin.isEnabled.toggle()
+                }
+
+                Divider()
+
+                if coordinator.hasPermission {
+                    Text("Screen Recording: Allowed")
                 } else {
-                    Button("Grant Screen Recording Permission…") {
+                    Button("Grant Screen Recording…") {
                         Permissions.openScreenRecordingSettings()
                     }
                 }
-            } else {
-                Button("Check Permission") {
-                    Task { await onCheckPermission() }
-                }
+
+                Button("Check Permission") { coordinator.refreshPermission() }
             }
-            
-            Divider()
-            
-            // Error display
-            if let error = appState.errorMessage {
-                Label(error, systemImage: "exclamationmark.triangle")
-                    .foregroundStyle(.red)
+
+            if let error = coordinator.appState.errorMessage {
                 Divider()
+                Text(error)
             }
-            
-            Button("Quit Glance") {
-                onQuit()
-            }
-            .keyboardShortcut("q", modifiers: .command)
+
+            Divider()
+
+            Button("Quit Glance") { NSApplication.shared.terminate(nil) }
+                .keyboardShortcut("q", modifiers: .command)
         }
+    }
+
+    private var ghostTitle: String {
+        let base = coordinator.appState.isGhostMode ? "Exit Ghost Mode" : "Toggle Ghost Mode"
+        return menuTitle(base, .toggleGhostMode)
+    }
+
+    /// Appends the current hotkey to a menu title.
+    ///
+    /// NSMenu key equivalents cannot represent an arbitrary KeyboardShortcuts
+    /// binding, so the combination is shown as text instead.
+    private func menuTitle(_ base: String, _ name: KeyboardShortcuts.Name) -> String {
+        guard let shortcut = KeyboardShortcuts.getShortcut(for: name) else { return base }
+        return "\(base)  \(shortcut)"
     }
 }

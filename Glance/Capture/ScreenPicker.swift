@@ -251,6 +251,15 @@ enum ScreenPicker {
             if ownerPID == NSRunningApplication.current.processIdentifier {
                 continue
             }
+
+            // Only ordinary application windows live on layer 0. The Dock, the
+            // menu bar, Control Center, Spotlight and the Screenshot overlay all
+            // sit on higher layers and span the whole screen, so without this
+            // check the front-to-back scan matched one of them for *every*
+            // selection — which is exactly what produced the
+            // "app=Screenshot / app=Dock, frame={{0,0},{1920,1243}}" captures.
+            let layer = windowInfo[kCGWindowLayer as String] as? Int ?? 0
+            guard layer == 0 else { continue }
             
             if bounds.contains(point) {
                 if let scWindow = content.windows.first(where: { $0.windowID == windowID }) {
@@ -259,5 +268,66 @@ enum ScreenPicker {
             }
         }
         return nil
+    }
+}
+
+
+// MARK: - Display & Window Resolution
+
+extension ScreenPicker {
+
+    /// Resolve the ``SCDisplay`` that corresponds to an `NSScreen`.
+    ///
+    /// The two APIs describe the same hardware but share no identifier type, so
+    /// the bridge goes through `CGDirectDisplayID`: `NSScreen` exposes it under
+    /// the `NSScreenNumber` device-description key, and `SCDisplay.displayID` is
+    /// the same value. Matching on frame geometry (as the old scale-factor
+    /// lookup did) is ambiguous whenever two displays share a resolution.
+    ///
+    /// - Parameter screen: The screen the user interacted with.
+    /// - Returns: The matching ``SCDisplay``, or `nil` if ScreenCaptureKit does
+    ///   not know about it.
+    static func display(for screen: NSScreen) async throws -> SCDisplay? {
+        guard let displayID = screen.displayID else {
+            Log.capture.error("NSScreen has no NSScreenNumber in its device description")
+            return nil
+        }
+
+        let displays = try await availableDisplays()
+        let match = displays.first { $0.displayID == displayID }
+
+        if match == nil {
+            Log.capture.error("""
+                No SCDisplay matches CGDirectDisplayID \(displayID, privacy: .public).                 Known: \(displays.map(\.displayID).description, privacy: .public)
+                """)
+        }
+        return match
+    }
+
+    /// Every on-screen window owned by Glance itself.
+    ///
+    /// These must be excluded from the content filter: the PiP panel floats
+    /// above the captured region, so including it would feed the panel's own
+    /// output back into the stream — an infinite mirror tunnel.
+    static func glanceWindows() async throws -> [SCWindow] {
+        let content = try await SCShareableContent.excludingDesktopWindows(
+            false,
+            onScreenWindowsOnly: true
+        )
+        let ownPID = ProcessInfo.processInfo.processIdentifier
+        return content.windows.filter { $0.owningApplication?.processID == ownPID }
+    }
+}
+
+// MARK: - NSScreen + Display ID
+
+extension NSScreen {
+
+    /// The `CGDirectDisplayID` backing this screen.
+    ///
+    /// AppKit only exposes it through the untyped device-description
+    /// dictionary; this wraps that lookup so callers don't repeat the key.
+    var displayID: CGDirectDisplayID? {
+        deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? CGDirectDisplayID
     }
 }

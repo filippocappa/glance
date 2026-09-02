@@ -184,10 +184,21 @@ enum SnapEngine {
 
     private static var activeTimer: Timer?
 
+    /// Stops any in-flight snap animation.
+    ///
+    /// The spring drives `setFrameOrigin` from a 120 Hz timer. If the user grabs
+    /// a corner while that timer is still alive, AppKit's live resize and the
+    /// timer both write the window frame every few milliseconds and the window
+    /// visibly judders. Every interactive gesture cancels the spring first.
+    static func cancelAnimation() {
+        activeTimer?.invalidate()
+        activeTimer = nil
+    }
+
     /// Animates the window frame origin using a mathematically exact spring simulation.
     /// Uses response: 0.3, dampingFraction: 0.6.
     static func animateSpring(window: NSWindow, to targetOrigin: CGPoint) {
-        activeTimer?.invalidate()
+        cancelAnimation()
 
         let startOrigin = window.frame.origin
         let x0 = Double(startOrigin.x - targetOrigin.x)

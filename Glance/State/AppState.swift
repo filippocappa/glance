@@ -54,8 +54,24 @@ final class AppState {
     /// `true` while the window is being dragged by the user.
     var isDragging: Bool = false
 
-    /// The Core Graphics window ID of the captured window.
-    var targetWindowID: CGWindowID?
+    /// `true` when Ghost Mode is engaged: the panel is dimmed and passes all
+    /// clicks through to whatever is behind it.
+    var isGhostMode: Bool = false
+
+    /// `true` while AppKit is performing a live corner/edge resize.
+    ///
+    /// Snapping, spring animation and click-through toggling are all suspended
+    /// while this is set — running any of them concurrently with a live resize
+    /// makes the window fight the cursor.
+    var isResizing: Bool = false
+
+    /// The size, in points, of the region actually being captured.
+    ///
+    /// This is the crop the stream is configured with — not the raw selection —
+    /// and it is the authority for the PiP panel's aspect ratio. In
+    /// window-relative mode the crop is clamped to the window's content rect, so
+    /// it can be smaller than what the user dragged.
+    var captureSize: CGSize = .zero
 
     /// The Unix PID of the application that owns the captured region.
     /// Used to implement "click PiP → bring source app to front".
@@ -88,11 +104,13 @@ final class AppState {
     func reset() {
         sourceRect = .zero
         targetDisplay = nil
-        targetWindowID = nil
+        captureSize = .zero
         isStreaming = false
         isPaused = false
         isHovering = false
         isDragging = false
+        isResizing = false
+        isGhostMode = false
         currentFrame = nil
         sourceAppPID = nil
         errorMessage = nil
