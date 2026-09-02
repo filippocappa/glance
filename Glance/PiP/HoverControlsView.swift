@@ -114,6 +114,23 @@ extension HoverControlsView {
     }
 }
 
+// MARK: - PressableStyle
+
+/// Immediate tactile feedback on mouse-down.
+///
+/// `configuration.isPressed` flips on the raw press, before any hover or
+/// animation state resolves, so the control acknowledges the click at the
+/// moment it happens rather than after the surrounding view settles.
+private struct PressableStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .scaleEffect(configuration.isPressed ? 0.88 : 1)
+            .opacity(configuration.isPressed ? 0.65 : 1)
+            // Short enough to read as tactile rather than animated.
+            .animation(.easeOut(duration: 0.07), value: configuration.isPressed)
+    }
+}
+
 // MARK: - ControlPill
 
 /// One circular control inside the HUD capsule.
@@ -147,7 +164,7 @@ private struct ControlPill: View {
                 )
                 .contentShape(Circle())
         }
-        .buttonStyle(.plain)
+        .buttonStyle(PressableStyle())
         .onHover { hovering = $0 }
         .animation(.easeOut(duration: 0.12), value: hovering)
         .animation(.easeOut(duration: 0.15), value: isActive)
@@ -222,7 +239,7 @@ struct GhostExitBadge: View {
                 )
                 .contentShape(Circle())
         }
-        .buttonStyle(.plain)
+        .buttonStyle(PressableStyle())
         .onHover { hovering = $0 }
         .animation(.easeOut(duration: 0.12), value: hovering)
         .help("Leave Ghost Mode (\(HoverControlsView.ghostShortcutLabel))")

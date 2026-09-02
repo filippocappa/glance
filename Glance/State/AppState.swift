@@ -43,11 +43,6 @@ final class AppState {
     /// `1.0` = pixel-accurate native resolution of the captured region.
     var zoomLevel: CGFloat = 1.0
 
-    /// The most recent frame delivered by `SCStream`, stored as an `IOSurface`
-    /// so it can be handed directly to Metal / Core Animation for zero-copy
-    /// rendering.
-    var currentFrame: IOSurface?
-
     /// `true` when the mouse is hovering over the PiP window, showing controls.
     var isHovering: Bool = false
 
@@ -116,7 +111,6 @@ final class AppState {
         isDragging = false
         isResizing = false
         isGhostMode = false
-        currentFrame = nil
         sourceAppPID = nil
         sourceWindowTitle = nil
         errorMessage = nil

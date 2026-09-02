@@ -336,25 +336,53 @@ final class CaptureEngine: NSObject {
            let window = try? await windowForID(candidate.windowID) {
 
             let cgRect = Self.cgGlobalRect(from: selection.rect)
-            let intersection = cgRect.intersection(window.frame)
+            let windowFrame = window.frame
+            let intersection = cgRect.intersection(windowFrame)
 
-            if !intersection.isNull, intersection.width >= 2, intersection.height >= 2 {
+            if !intersection.isNull, intersection.width >= 2, intersection.height >= 2,
+               windowFrame.width > 0, windowFrame.height > 0 {
+
                 let filter = SCContentFilter(desktopIndependentWindow: window)
                 let contentRect = filter.contentRect
 
-                // Offset within the window, rebased onto the filter's content
-                // rect — the space `sourceRect` is measured in, which is NOT
-                // the window's global frame.
+                Log.capture.debug("""
+                    Window geometry — frame=\(NSStringFromRect(windowFrame), privacy: .public) \
+                    contentRect=\(NSStringFromRect(contentRect), privacy: .public) \
+                    scale=\(filter.pointPixelScale, privacy: .public)
+                    """)
+
+                // Map the selection into the filter's space by NORMALISED
+                // fraction of the window, not by a raw point offset.
+                //
+                // `sourceRect` is measured against `filter.contentRect`, which
+                // is not guaranteed to match `SCWindow.frame` — it can differ in
+                // origin and in size, because what SCK composites for a window
+                // includes the window's own shadow/padding region. Adding a
+                // point offset taken from the window frame therefore drifts by
+                // exactly that inset, which is the offset seen in Finder, whose
+                // shadow geometry differs from a plain content window's.
+                //
+                // Fractions are invariant to both of those differences, so this
+                // maps identically for every application.
+                let fx = (intersection.minX - windowFrame.minX) / windowFrame.width
+                let fy = (intersection.minY - windowFrame.minY) / windowFrame.height
+                let fw = intersection.width / windowFrame.width
+                let fh = intersection.height / windowFrame.height
+
                 var crop = CGRect(
-                    x: contentRect.minX + (intersection.minX - window.frame.minX),
-                    y: contentRect.minY + (intersection.minY - window.frame.minY),
-                    width: intersection.width,
-                    height: intersection.height
+                    x: contentRect.minX + fx * contentRect.width,
+                    y: contentRect.minY + fy * contentRect.height,
+                    width: fw * contentRect.width,
+                    height: fh * contentRect.height
                 )
                 crop = crop.intersection(contentRect)
 
                 if !crop.isNull, crop.width >= 2, crop.height >= 2 {
-                    Log.capture.info("Binding highlighted window \(candidate.windowID, privacy: .public) (coverage \(Int(candidate.coverage * 100), privacy: .public)%)")
+                    Log.capture.info("""
+                        Binding highlighted window \(candidate.windowID, privacy: .public) \
+                        (coverage \(Int(candidate.coverage * 100), privacy: .public)%) \
+                        crop=\(NSStringFromRect(crop), privacy: .public)
+                        """)
                     return .window(window, crop: crop)
                 }
             }
@@ -629,6 +657,14 @@ extension CaptureEngine: SCStreamOutput {
 
         if count == 1 {
             Log.capture.info("First sample buffer received: \(CVPixelBufferGetWidth(pixelBuffer), privacy: .public)x\(CVPixelBufferGetHeight(pixelBuffer), privacy: .public)")
+        } else if count % 600 == 0 {
+            // Roughly every 10s at 60fps. Footprint should be flat across a long
+            // session; a rising number means frames are being retained
+            // somewhere they should not be.
+            Log.capture.debug("""
+                \(count, privacy: .public) frames — \
+                \(Self.footprintMB(), privacy: .public) MB footprint
+                """)
         }
 
         // Zero-copy handle to the WindowServer's own GPU memory.
@@ -653,11 +689,31 @@ extension CaptureEngine: SCStreamOutput {
                 self.renderingLock.unlock()
             }
 
-            self.appState?.currentFrame = surface
+            // NOTE: the surface is deliberately NOT stored on AppState.
+            //
+            // `AppState` is `@Observable`, so assigning to it 60 times a second
+            // ran the observation machinery on every frame — registrar lookups
+            // and change notifications — for a property no view ever read. The
+            // renderer is fed directly; `lastSurface` (plain storage, under the
+            // lock) covers the replay case.
+            //
             // A nil renderer here is normal for the first frames; the surface is
             // buffered above and replayed by `attachRenderer(_:)`.
             self.onFrameReceived?(surface)
         }
+    }
+
+    /// Resident memory footprint in MB, for the streaming instrumentation.
+    static func footprintMB() -> Int {
+        var info = task_vm_info_data_t()
+        var count = mach_msg_type_number_t(MemoryLayout<task_vm_info_data_t>.size / MemoryLayout<integer_t>.size)
+        let result = withUnsafeMutablePointer(to: &info) {
+            $0.withMemoryRebound(to: integer_t.self, capacity: Int(count)) {
+                task_info(mach_task_self_, task_flavor_t(TASK_VM_INFO), $0, &count)
+            }
+        }
+        guard result == KERN_SUCCESS else { return -1 }
+        return Int(info.phys_footprint / (1024 * 1024))
     }
 
     /// Emits at most one message per second so a per-frame condition doesn't

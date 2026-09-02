@@ -54,6 +54,7 @@ final class FirstMouseHostingView<Content: View>: NSHostingView<Content> {
 // ─────────────────────────────────────────────────────────────────────────────
 
 final class HoverTrackingView: NSView {
+    var onEntered: (() -> Void)?
     var onExited: (() -> Void)?
 
     override func updateTrackingAreas() {
@@ -66,20 +67,24 @@ final class HoverTrackingView: NSView {
         ))
     }
 
+    override func mouseEntered(with event: NSEvent) { onEntered?() }
     override func mouseExited(with event: NSEvent) { onExited?() }
     override func hitTest(_ point: NSPoint) -> NSView? { nil }  // tracking only, never steals clicks
 }
 
 struct HoverTracker: NSViewRepresentable {
+    var onEntered: () -> Void
     var onExited: () -> Void
 
     func makeNSView(context: Context) -> HoverTrackingView {
         let view = HoverTrackingView()
+        view.onEntered = onEntered
         view.onExited = onExited
         return view
     }
 
     func updateNSView(_ nsView: HoverTrackingView, context: Context) {
+        nsView.onEntered = onEntered
         nsView.onExited = onExited
     }
 }
@@ -268,8 +273,17 @@ final class GlanceWindowController: NSObject, NSWindowDelegate {
 
         observeLiveResize(of: panel)
 
-        // Start in ghost mode.
-        panel.ignoresMouseEvents = true
+        // The panel accepts mouse events from the moment it appears.
+        //
+        // It used to start click-through and only become interactive once a
+        // GLOBAL mouse monitor noticed the cursor enter. A global monitor only
+        // sees events delivered to *other* applications, so the sequence was:
+        // cursor enters -> the click lands on the app underneath -> the monitor
+        // fires -> the panel becomes interactive. The first click after entering
+        // was therefore routinely lost, and every later one waited on a
+        // main-queue hop. Pass-through is now exclusively Ghost Mode's job,
+        // which is explicit, sticky, and has its own hotkey.
+        panel.ignoresMouseEvents = false
 
         let contentView = PiPContentView(
             appState: appState,
@@ -278,6 +292,7 @@ final class GlanceWindowController: NSObject, NSWindowDelegate {
             onClose: { [weak self] in self?.close() },
             onBringToFront: { [weak self] in self?.bringSourceToFront() },
             onZoomLevelChanged: { [weak self] newZoom in self?.resizeWindow(toZoom: newZoom) },
+            onHoverEntered: { [weak self] in self?.setHovering(true) },
             onHoverExited: { [weak self] in self?.setHovering(false) },
             onToggleGhostMode: { [weak self] in self?.toggleGhostMode() }
         )
@@ -443,13 +458,10 @@ final class GlanceWindowController: NSObject, NSWindowDelegate {
             // If the cursor is already inside, adopt the hover state now. The
             // global monitor only fires on movement, so a stationary cursor
             // would otherwise leave the HUD hidden over an interactive panel.
+            // The panel is interactive whenever Ghost Mode is off, so there is
+            // no cursor-dependent branch to get wrong here.
             let inside = panel.frame.contains(NSEvent.mouseLocation)
-            if inside {
-                withAnimation(.easeInOut(duration: 0.15)) { appState.isHovering = true }
-            } else {
-                appState.isHovering = false
-                panel.ignoresMouseEvents = true
-            }
+            withAnimation(.easeInOut(duration: 0.15)) { appState.isHovering = inside }
         }
 
         Log.window.info("Ghost Mode \(enabled ? "engaged" : "released", privacy: .public)")
@@ -539,27 +551,22 @@ final class GlanceWindowController: NSObject, NSWindowDelegate {
 
     // MARK: - Ghost Mode (event-driven hover)
 
+    /// Watches the cursor while Ghost Mode is engaged, so the exit badge can be
+    /// made clickable as it passes over.
+    ///
+    /// Only needed in Ghost Mode: the panel is click-through then, so its events
+    /// go to the app underneath and a global monitor is the only way to see
+    /// them. Outside Ghost Mode the panel receives its own events and hover is
+    /// driven by an NSTrackingArea instead, which is both lower latency and not
+    /// subject to the monitor's delivery hop.
     private func startHoverMonitoring() {
         stopHoverMonitoring()
         globalMouseMonitor = NSEvent.addGlobalMonitorForEvents(
             matching: [.mouseMoved, .leftMouseDragged]
         ) { [weak self] _ in
             MainActor.assumeIsolated {
-                guard let self, let panel = self.panel else { return }
-                let location = NSEvent.mouseLocation
-
-                // Ghost Mode owns the mouse-event flag while it is engaged.
-                if self.appState.isGhostMode {
-                    self.updateGhostHitTesting(cursorAt: location)
-                    return
-                }
-
-                guard !self.appState.isHovering,
-                      !self.appState.isDragging,
-                      !self.appState.isResizing else { return }
-                if panel.frame.contains(location) {
-                    self.setHovering(true)
-                }
+                guard let self, self.appState.isGhostMode else { return }
+                self.updateGhostHitTesting(cursorAt: NSEvent.mouseLocation)
             }
         }
     }
@@ -573,12 +580,13 @@ final class GlanceWindowController: NSObject, NSWindowDelegate {
 
     /// Enter or leave interactive mode.
     fileprivate func setHovering(_ hovering: Bool) {
-        guard let panel, appState.isHovering != hovering, !appState.isGhostMode else { return }
-        // Never drop back to click-through mid-gesture: that would cancel the
-        // drag and hand the remaining mouse events to the window underneath.
+        guard appState.isHovering != hovering, !appState.isGhostMode else { return }
+        // Keep the HUD up for the whole of a drag or resize, even if the cursor
+        // strays outside the frame mid-gesture.
         if !hovering && (appState.isDragging || appState.isResizing) { return }
 
-        panel.ignoresMouseEvents = !hovering
+        // Purely visual now. Mouse delivery is no longer tied to hover, so a
+        // click never has to wait for this to resolve.
         withAnimation(.easeInOut(duration: 0.15)) {
             appState.isHovering = hovering
         }
@@ -718,6 +726,7 @@ struct PiPContentView: View {
     var onClose: () -> Void
     var onBringToFront: () -> Void
     var onZoomLevelChanged: (CGFloat) -> Void
+    var onHoverEntered: () -> Void
     var onHoverExited: () -> Void
     var onToggleGhostMode: () -> Void
 
@@ -778,7 +787,7 @@ struct PiPContentView: View {
                 }
 
                 // Reports cursor exit so the panel can return to click-through mode.
-                HoverTracker(onExited: onHoverExited)
+                HoverTracker(onEntered: onHoverEntered, onExited: onHoverExited)
                     .allowsHitTesting(false)
             }
             .background(Color.black)
