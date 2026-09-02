@@ -370,7 +370,7 @@ final class GlanceWindowController: NSObject, NSWindowDelegate {
             let target = SnapEngine.snapPosition(for: panel.frame, on: screen)
                 ?? SnapEngine.clampOnScreen(panel.frame, on: screen)
             if animated {
-                SnapEngine.animateSpring(window: panel, to: target)
+                SnapEngine.animateSpring(window: panel, to: target, on: screen)
             } else {
                 panel.setFrameOrigin(target)
             }
@@ -487,7 +487,7 @@ final class GlanceWindowController: NSObject, NSWindowDelegate {
                 // windowWillResize sanitised every step of it.
                 let screen = panel.screen ?? NSScreen.main ?? NSScreen.screens[0]
                 if let target = SnapEngine.snapPosition(for: panel.frame, on: screen) {
-                    SnapEngine.animateSpring(window: panel, to: target)
+                    SnapEngine.animateSpring(window: panel, to: target, on: screen)
                 }
                 Log.window.debug("Live resize ended — size \(NSStringFromSize(panel.frame.size), privacy: .public)")
             }
@@ -688,6 +688,13 @@ struct PiPContentView: View {
     /// Screen coordinates are an absolute frame that the window cannot perturb.
     @State private var dragAnchor: (windowOrigin: CGPoint, mouse: CGPoint)? = nil
 
+    /// Recent cursor samples, newest last, used to measure release velocity.
+    ///
+    /// Velocity is taken over a short trailing window rather than from the last
+    /// two events: consecutive samples can be a single frame apart, where a one
+    /// pixel jitter reads as hundreds of points per second.
+    @State private var velocitySamples: [(time: CFTimeInterval, point: CGPoint)] = []
+
     /// Width of the border band reserved for AppKit's live-resize handles.
     ///
     /// A drag that begins inside this band is a resize, not a move, so the move
@@ -753,19 +760,23 @@ struct PiPContentView: View {
                               !isInResizeBand(value.startLocation, in: geometry.size)
                         else { return }
 
+                        let mouse = NSEvent.mouseLocation
+
                         if dragAnchor == nil {
-                            dragAnchor = (window.frame.origin, NSEvent.mouseLocation)
+                            dragAnchor = (window.frame.origin, mouse)
                             appState.isDragging = true
+                            velocitySamples = []
                             // A snap still settling would otherwise keep writing
                             // the origin underneath the drag.
                             SnapEngine.cancelAnimation()
                         }
                         guard let anchor = dragAnchor else { return }
 
+                        recordSample(mouse)
+
                         // Pure 1:1 cursor tracking. No snapping, no clamping and
                         // no animation runs while the mouse is down — the window
                         // simply follows the delta.
-                        let mouse = NSEvent.mouseLocation
                         window.setFrameOrigin(CGPoint(
                             x: anchor.windowOrigin.x + (mouse.x - anchor.mouse.x),
                             y: anchor.windowOrigin.y + (mouse.y - anchor.mouse.y)
@@ -776,18 +787,12 @@ struct PiPContentView: View {
                         dragAnchor = nil
                         appState.isDragging = false
 
-                        // Everything positional happens here, on mouse-up: pick
-                        // the corner (if any) and settle with one spring.
+                        // Everything positional happens here, on mouse-up: the
+                        // release velocity chooses the target and seeds the
+                        // spring that carries the window to it.
                         let screen = window.screen ?? NSScreen.main ?? NSScreen.screens[0]
-                        if let target = SnapEngine.snapPosition(for: window.frame, on: screen) {
-                            SnapEngine.animateSpring(window: window, to: target)
-                        } else {
-                            // Still keep it reachable if flung past an edge.
-                            let clamped = SnapEngine.clampOnScreen(window.frame, on: screen)
-                            if clamped != window.frame.origin {
-                                SnapEngine.animateSpring(window: window, to: clamped)
-                            }
-                        }
+                        SnapEngine.release(window: window, velocity: releaseVelocity(), on: screen)
+                        velocitySamples = []
                     }
             )
             .onChange(of: appState.zoomLevel) { _, newValue in
@@ -795,6 +800,44 @@ struct PiPContentView: View {
             }
         }
     }
+
+    /// Appends a cursor sample and drops anything older than the measurement
+    /// window, so the buffer stays at a handful of entries.
+    private func recordSample(_ point: CGPoint) {
+        let now = CACurrentMediaTime()
+        velocitySamples.append((now, point))
+        velocitySamples.removeAll { now - $0.time > Self.velocityWindow }
+    }
+
+    /// Cursor velocity at release, in points per second.
+    ///
+    /// Measured from the oldest sample still inside the trailing window to the
+    /// newest. If the cursor was held still before letting go the buffer holds
+    /// only near-identical points, which correctly yields ~zero and leaves the
+    /// window where it was dropped.
+    private func releaseVelocity() -> CGVector {
+        guard let newest = velocitySamples.last,
+              let oldest = velocitySamples.first,
+              case let dt = newest.time - oldest.time,
+              dt > 0.004
+        else { return .zero }
+
+        var vx = (newest.point.x - oldest.point.x) / CGFloat(dt)
+        var vy = (newest.point.y - oldest.point.y) / CGFloat(dt)
+
+        // Clamp: one stray sample across a dropped frame can otherwise report
+        // thousands of points per second and fling the window at the wall.
+        let speed = hypot(vx, vy)
+        if speed > SnapEngine.maxFlickSpeed {
+            let scale = SnapEngine.maxFlickSpeed / speed
+            vx *= scale
+            vy *= scale
+        }
+        return CGVector(dx: vx, dy: vy)
+    }
+
+    /// Trailing window over which release velocity is measured.
+    private static let velocityWindow: CFTimeInterval = 0.09
 
     /// Whether `point` (in view coordinates) falls in the resize border band.
     private func isInResizeBand(_ point: CGPoint, in size: CGSize) -> Bool {

@@ -75,6 +75,27 @@ enum Permissions {
     // MARK: - Error Interpretation
     // ──────────────────────────────────────────────
 
+    /// Whether a stream termination was a deliberate stop rather than a fault.
+    ///
+    /// macOS shows a purple recording pill in the menu bar with a "Stop
+    /// Sharing" button. Pressing it tears the stream down from outside the app,
+    /// and SCK reports that through `stream(_:didStopWithError:)` exactly like a
+    /// genuine failure. Treating it as one surfaced a spurious error to the user
+    /// for what is really a normal way to end a session.
+    static func isDeliberateStop(_ error: Error) -> Bool {
+        let nsError = error as NSError
+        guard nsError.domain == SCStreamErrorDomain else { return false }
+        switch nsError.code {
+        case -3817,  // userStopped — the menu bar "Stop Sharing" button
+             -3821,  // systemStoppedStream
+             -3814,  // removingStream
+             -3808:  // attemptToStopStreamState (already stopping)
+            return true
+        default:
+            return false
+        }
+    }
+
     /// Human-readable explanation for a ScreenCaptureKit failure.
     ///
     /// SCStream reports permission problems as opaque `SCStreamErrorDomain`
@@ -94,7 +115,13 @@ enum Permissions {
         case -3802:
             explanation = "Failed to start the capture stream (SCStream refused to begin)."
         case -3808:
-            explanation = "The capture stream was stopped by the system."
+            explanation = "The capture stream was already stopping."
+        case -3814:
+            explanation = "The capture stream was removed."
+        case -3817:
+            explanation = "You stopped sharing from the menu bar."
+        case -3821:
+            explanation = "The system stopped the capture stream."
         case -3811:
             explanation = "The capture target (window or display) no longer exists."
         default:

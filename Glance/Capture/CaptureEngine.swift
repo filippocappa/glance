@@ -91,6 +91,12 @@ final class CaptureEngine: NSObject {
 
     // MARK: Frame delivery
 
+    /// Invoked on the main thread when the stream ends on its own — whether
+    /// because the user pressed "Stop Sharing" in the menu bar pill, or because
+    /// the stream failed. The owner should tear the PiP down either way; a dead
+    /// stream cannot be revived.
+    var onStreamEnded: (() -> Void)?
+
     /// Invoked on the main thread with each new frame's IOSurface.
     ///
     /// Prefer ``attachRenderer(_:)`` over assigning this directly — it replays
@@ -669,22 +675,41 @@ extension CaptureEngine: SCStreamOutput {
 
 extension CaptureEngine: SCStreamDelegate {
 
-    /// Called when the stream terminates unexpectedly.
+    /// Called when the stream terminates without us asking.
+    ///
+    /// Two very different situations arrive through this one callback: the user
+    /// pressing "Stop Sharing" in the system's recording pill, and an actual
+    /// capture failure. Only the second is worth reporting.
     func stream(_ stream: SCStream, didStopWithError error: Error) {
+        let deliberate = Permissions.isDeliberateStop(error)
         let description = Permissions.describe(error)
-        Log.capture.error("Stream stopped with error — \(description, privacy: .public)")
 
-        DispatchQueue.main.async { [weak self] in
-            guard let self else { return }
-            self.isRunning = false
-            self.appState?.isStreaming = false
-            self.appState?.isPaused = true
-            self.appState?.errorMessage = description
+        if deliberate {
+            Log.capture.info("Stream ended deliberately — \(description, privacy: .public)")
+        } else {
+            Log.capture.error("Stream stopped with error — \(description, privacy: .public)")
         }
+
+        // Release the stream here as well as in stopCapture(). The session is
+        // already dead; holding the object keeps the system's recording
+        // indicator lit until something else happens to clear it.
+        self.stream = nil
+        self.streamConfiguration = nil
 
         for observer in workspaceObservers {
             NSWorkspace.shared.notificationCenter.removeObserver(observer)
         }
         workspaceObservers.removeAll()
+
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.isRunning = false
+            self.appState?.isStreaming = false
+            self.appState?.isPaused = false
+            // A deliberate stop is not a failure, so it leaves no message
+            // behind in the menu.
+            self.appState?.errorMessage = deliberate ? nil : description
+            self.onStreamEnded?()
+        }
     }
 }

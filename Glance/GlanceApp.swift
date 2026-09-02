@@ -37,6 +37,18 @@ final class GlanceCoordinator {
         Log.installCrashDiagnostics()
         registerGlobalShortcuts()
 
+        // The stream can end without us: "Stop Sharing" in the system recording
+        // pill, a failure, or the source disappearing. Close the PiP and return
+        // to idle in every case, preserving any error message across the reset
+        // so the menu can still explain what happened.
+        captureEngine.onStreamEnded = { [weak self] in
+            guard let self, self.windowController != nil else { return }
+            let message = self.appState.errorMessage
+            Log.window.info("Stream ended externally — closing PiP")
+            self.stopGlance()
+            self.appState.errorMessage = message
+        }
+
         // First-run onboarding. This has to be deferred by one run-loop turn:
         // `@State` initialisers run while the App value is being built, before
         // NSApplication has finished launching, and ordering a window in at

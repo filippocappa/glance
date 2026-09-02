@@ -57,6 +57,21 @@ enum SnapEngine {
     /// felt only right at a corner.
     static let snapThreshold: CGFloat = 64
 
+    /// Release speed, in points per second, above which a drag is treated as a
+    /// flick and carries momentum instead of stopping dead.
+    static let flickThreshold: CGFloat = 220
+
+    /// How far ahead a flick is projected when choosing its snap target.
+    ///
+    /// This is the time constant of the decay, not the full glide duration —
+    /// the spring does the actual deceleration. 0.22s makes a firm flick reach
+    /// a corner from roughly a third of the screen away.
+    static let projectionInterval: CGFloat = 0.22
+
+    /// Upper bound on tracked velocity. A single stray sample across two frames
+    /// can otherwise report thousands of points per second.
+    static let maxFlickSpeed: CGFloat = 3600
+
     // MARK: Anchor Calculation
 
     /// Computes the eight canonical snap positions for a window of the
@@ -146,6 +161,24 @@ enum SnapEngine {
         nearestAnchor(for: windowFrame, on: screen).point
     }
 
+    /// Where a flick would come to rest, ignoring snapping.
+    ///
+    /// Used to choose the snap target: a window thrown *toward* a corner should
+    /// land in it, even though the release point itself was nowhere near.
+    static func projectedOrigin(
+        from frame: NSRect,
+        velocity: CGVector,
+        on screen: NSScreen
+    ) -> CGPoint {
+        let projected = NSRect(
+            x: frame.minX + velocity.dx * projectionInterval,
+            y: frame.minY + velocity.dy * projectionInterval,
+            width: frame.width,
+            height: frame.height
+        )
+        return clampOnScreen(projected, on: screen)
+    }
+
     /// Keeps a window fully on screen, so it can never be dropped out of reach.
     static func clampOnScreen(_ frame: NSRect, on screen: NSScreen) -> CGPoint {
         let visible = screen.visibleFrame
@@ -223,34 +256,62 @@ enum SnapEngine {
     /// aligned to the display's refresh, so frames land at arbitrary phases
     /// relative to vsync and the motion stutters even though the maths is
     /// smooth. A display link fires once per frame, in step with the compositor.
-    static func animateSpring(window: NSWindow, to targetOrigin: CGPoint) {
+    /// - Parameters:
+    ///   - velocity: Release velocity in points per second. The spring solver
+    ///     already models a damped oscillator with an initial velocity term, so
+    ///     a throw is expressed by seeding `v0` rather than by bolting a
+    ///     separate friction phase in front of the animation. Momentum and
+    ///     snapping are then the same motion, not two chained ones.
+    ///   - screen: When given, every frame is clamped to its `visibleFrame`, so
+    ///     an underdamped overshoot can never carry the window off-screen.
+    static func animateSpring(
+        window: NSWindow,
+        to targetOrigin: CGPoint,
+        velocity: CGVector = .zero,
+        on screen: NSScreen? = nil
+    ) {
         cancelAnimation()
 
         let startOrigin = window.frame.origin
         let dx = Double(startOrigin.x - targetOrigin.x)
         let dy = Double(startOrigin.y - targetOrigin.y)
+        let vx = Double(velocity.dx)
+        let vy = Double(velocity.dy)
 
-        // Already there — nothing to animate.
-        guard abs(dx) > 0.5 || abs(dy) > 0.5 else {
+        // Already there and not moving — nothing to animate.
+        guard abs(dx) > 0.5 || abs(dy) > 0.5 || abs(vx) > 1 || abs(vy) > 1 else {
             window.setFrameOrigin(targetOrigin)
             return
         }
 
-        let spring = AnalyticalSpring(response: 0.3, dampingFraction: 0.6)
+        // A thrown window gets a longer, looser spring so the glide reads as
+        // momentum decaying rather than as a snap that happens to start fast.
+        let thrown = hypot(vx, vy) > Double(flickThreshold)
+        let spring = thrown
+            ? AnalyticalSpring(response: 0.45, dampingFraction: 0.82)
+            : AnalyticalSpring(response: 0.3, dampingFraction: 0.6)
+        let settleTime = thrown ? 1.2 : 0.8
         let start = CACurrentMediaTime()
 
         let tick: (CADisplayLink) -> Void = { link in
             let elapsed = CACurrentMediaTime() - start
-            let x = spring.solve(t: elapsed, x0: dx, v0: 0)
-            let y = spring.solve(t: elapsed, x0: dy, v0: 0)
+            let x = spring.solve(t: elapsed, x0: dx, v0: vx)
+            let y = spring.solve(t: elapsed, x0: dy, v0: vy)
 
-            window.setFrameOrigin(CGPoint(
+            var origin = CGPoint(
                 x: targetOrigin.x + CGFloat(x.x),
                 y: targetOrigin.y + CGFloat(y.x)
-            ))
+            )
+            if let screen {
+                origin = clampOnScreen(
+                    NSRect(origin: origin, size: window.frame.size),
+                    on: screen
+                )
+            }
+            window.setFrameOrigin(origin)
 
-            // Settling time for response 0.3 / damping 0.6 is roughly 0.6s.
-            if elapsed >= 0.8 || (abs(x.x) < 0.1 && abs(y.x) < 0.1) {
+            // Stop once the displacement has decayed, or the budget is spent.
+            if elapsed >= settleTime || (abs(x.x) < 0.1 && abs(y.x) < 0.1 && abs(x.v) < 4 && abs(y.v) < 4) {
                 window.setFrameOrigin(targetOrigin)
                 cancelAnimation()
             }
@@ -284,7 +345,37 @@ enum SnapEngine {
     ///   - screen: The screen whose visible frame defines snap positions.
     static func snapToNearest(window: NSWindow, on screen: NSScreen) {
         guard let target = snapPosition(for: window.frame, on: screen) else { return }
-        animateSpring(window: window, to: target)
+        animateSpring(window: window, to: target, on: screen)
+    }
+
+    /// Settles a window after a drag, carrying any release momentum into the
+    /// snap decision.
+    ///
+    /// The projected landing point — not the release point — chooses the
+    /// corner, so a window flicked *toward* a corner lands in it even when the
+    /// mouse was released far away.
+    static func release(window: NSWindow, velocity: CGVector, on screen: NSScreen) {
+        let speed = hypot(velocity.dx, velocity.dy)
+
+        guard speed > flickThreshold else {
+            // Gentle release: snap only if already near a corner, otherwise
+            // leave it exactly where it was dropped.
+            if let target = snapPosition(for: window.frame, on: screen) {
+                animateSpring(window: window, to: target, on: screen)
+            } else {
+                let clamped = clampOnScreen(window.frame, on: screen)
+                if clamped != window.frame.origin {
+                    animateSpring(window: window, to: clamped, on: screen)
+                }
+            }
+            return
+        }
+
+        let landing = projectedOrigin(from: window.frame, velocity: velocity, on: screen)
+        let projectedFrame = NSRect(origin: landing, size: window.frame.size)
+        let target = snapPosition(for: projectedFrame, on: screen) ?? landing
+
+        animateSpring(window: window, to: target, velocity: velocity, on: screen)
     }
 }
 
